@@ -1,0 +1,19 @@
+﻿Régimen,Activo,Media anual (%),Volat. anual (%),Sesgo,Curtosis exc.
+Baja volatilidad,S&P 500,31.72,10.7,-0.1,1.308
+Baja volatilidad,MSCI EAFE,26.08,12.76,-0.148,1.392
+Baja volatilidad,MSCI Emerging Markets,23.82,17.57,-0.127,2.395
+Baja volatilidad,Oro,5.79,15.36,-0.647,5.234
+Baja volatilidad,Petróleo WTI,8.28,27.87,-0.188,2.008
+Baja volatilidad,Bono EEUU 10Y,-0.25,5.64,-0.204,1.05
+Volatilidad moderada,S&P 500,-14.36,20.34,0.03,0.355
+Volatilidad moderada,MSCI EAFE,-13.12,22.25,-0.081,2.176
+Volatilidad moderada,MSCI Emerging Markets,-5.91,27.76,0.077,1.264
+Volatilidad moderada,Oro,19.97,18.3,-0.574,2.907
+Volatilidad moderada,Petróleo WTI,-1.16,36.88,-0.068,1.246
+Volatilidad moderada,Bono EEUU 10Y,10.57,7.73,0.026,0.572
+Estrés financiero,S&P 500,-93.51,46.92,0.043,1.852
+Estrés financiero,MSCI EAFE,-95.89,50.07,0.105,2.502
+Estrés financiero,MSCI Emerging Markets,-104.33,64.48,0.357,3.951
+Estrés financiero,Oro,7.88,29.5,0.204,3.499
+Estrés financiero,Petróleo WTI,-172.27,73.31,-1.095,6.656
+Estrés financiero,Bono EEUU 10Y,10.03,11.16,0.295,1.77
