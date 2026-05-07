@@ -38,5 +38,5 @@ fake = np.transpose(fake.squeeze(2), (0, 2, 1))        # (N, T, C)
 
 # 5) Visualizacion (PCA o tSNE)
 os.makedirs("images", exist_ok=True)
-visualization(real, fake, analysis="tsne", save_name="sp500_pca")
-# visualization(real, fake, analysis="tsne", save_name="sp500_tsne")
+visualization(real, fake, analysis="pca", save_name="sp500_pca")
+visualization(real, fake, analysis="tsne", save_name="sp500_tsne")
