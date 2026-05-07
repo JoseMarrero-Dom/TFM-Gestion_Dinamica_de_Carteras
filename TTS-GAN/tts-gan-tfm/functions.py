@@ -80,10 +80,10 @@ def train_d(args, gen_net: nn.Module, dis_net: nn.Module, dis_optimizer, train_l
         
 
         # Adversarial ground truths
-        real_imgs = imgs.type(torch.cuda.FloatTensor).cuda(args.gpu, non_blocking=True)
+        real_imgs = imgs.float().to(args.device, non_blocking=True)
 
         # Sample noise as generator input
-        z = torch.cuda.FloatTensor(np.random.normal(0, 1, (imgs.shape[0], args.latent_dim))).cuda(args.gpu, non_blocking=True)
+        z = torch.tensor(np.random.normal(0, 1, (imgs.shape[0], args.latent_dim)), dtype=torch.float32, device=args.device)
 
         # ---------------------
         #  Train Discriminator
@@ -104,8 +104,8 @@ def train_d(args, gen_net: nn.Module, dis_net: nn.Module, dis_optimizer, train_l
                     torch.mean(nn.ReLU(inplace=True)(1 + fake_validity))
         elif args.loss == 'standard':
             #soft label
-            real_label = torch.full((imgs.shape[0],), 0.9, dtype=torch.float, device=real_imgs.get_device())
-            fake_label = torch.full((imgs.shape[0],), 0.1, dtype=torch.float, device=real_imgs.get_device())
+            real_label = torch.full((imgs.shape[0],), 0.9, dtype=torch.float, device=args.device)
+            fake_label = torch.full((imgs.shape[0],), 0.1, dtype=torch.float, device=args.device)
             real_validity = nn.Sigmoid()(real_validity.view(-1))
             fake_validity = nn.Sigmoid()(fake_validity.view(-1))
             d_real_loss = nn.BCELoss()(real_validity, real_label)
@@ -115,14 +115,14 @@ def train_d(args, gen_net: nn.Module, dis_net: nn.Module, dis_optimizer, train_l
             if isinstance(fake_validity, list):
                 d_loss = 0
                 for real_validity_item, fake_validity_item in zip(real_validity, fake_validity):
-                    real_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 1., dtype=torch.float, device=real_imgs.get_device())
-                    fake_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 0., dtype=torch.float, device=real_imgs.get_device())
+                    real_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 1., dtype=torch.float, device=args.device)
+                    fake_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 0., dtype=torch.float, device=args.device)
                     d_real_loss = nn.MSELoss()(real_validity_item, real_label)
                     d_fake_loss = nn.MSELoss()(fake_validity_item, fake_label)
                     d_loss += d_real_loss + d_fake_loss
             else:
-                real_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 1., dtype=torch.float, device=real_imgs.get_device())
-                fake_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 0., dtype=torch.float, device=real_imgs.get_device())
+                real_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 1., dtype=torch.float, device=args.device)
+                fake_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 0., dtype=torch.float, device=args.device)
                 d_real_loss = nn.MSELoss()(real_validity, real_label)
                 d_fake_loss = nn.MSELoss()(fake_validity, fake_label)
                 d_loss = d_real_loss + d_fake_loss
@@ -215,10 +215,10 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         
 
         # Adversarial ground truths
-        real_imgs = imgs.type(torch.cuda.FloatTensor).cuda(args.gpu, non_blocking=True)
+        real_imgs = imgs.float().to(args.device, non_blocking=True)
 
         # Sample noise as generator input
-        z = torch.cuda.FloatTensor(np.random.normal(0, 1, (imgs.shape[0], args.latent_dim))).cuda(args.gpu, non_blocking=True)
+        z = torch.tensor(np.random.normal(0, 1, (imgs.shape[0], args.latent_dim)), dtype=torch.float32, device=args.device)
 
         # ---------------------
         #  Train Discriminator
@@ -239,8 +239,8 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
                     torch.mean(nn.ReLU(inplace=True)(1 + fake_validity))
         elif args.loss == 'standard':
             #soft label
-            real_label = torch.full((imgs.shape[0],), 0.9, dtype=torch.float, device=real_imgs.get_device())
-            fake_label = torch.full((imgs.shape[0],), 0.1, dtype=torch.float, device=real_imgs.get_device())
+            real_label = torch.full((imgs.shape[0],), 0.9, dtype=torch.float, device=args.device)
+            fake_label = torch.full((imgs.shape[0],), 0.1, dtype=torch.float, device=args.device)
             real_validity = nn.Sigmoid()(real_validity.view(-1))
             fake_validity = nn.Sigmoid()(fake_validity.view(-1))
             d_real_loss = nn.BCELoss()(real_validity, real_label)
@@ -250,14 +250,14 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
             if isinstance(fake_validity, list):
                 d_loss = 0
                 for real_validity_item, fake_validity_item in zip(real_validity, fake_validity):
-                    real_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 1., dtype=torch.float, device=real_imgs.get_device())
-                    fake_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 0., dtype=torch.float, device=real_imgs.get_device())
+                    real_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 1., dtype=torch.float, device=args.device)
+                    fake_label = torch.full((real_validity_item.shape[0],real_validity_item.shape[1]), 0., dtype=torch.float, device=args.device)
                     d_real_loss = nn.MSELoss()(real_validity_item, real_label)
                     d_fake_loss = nn.MSELoss()(fake_validity_item, fake_label)
                     d_loss += d_real_loss + d_fake_loss
             else:
-                real_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 1., dtype=torch.float, device=real_imgs.get_device())
-                fake_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 0., dtype=torch.float, device=real_imgs.get_device())
+                real_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 1., dtype=torch.float, device=args.device)
+                fake_label = torch.full((real_validity.shape[0],real_validity.shape[1]), 0., dtype=torch.float, device=args.device)
                 d_real_loss = nn.MSELoss()(real_validity, real_label)
                 d_fake_loss = nn.MSELoss()(fake_validity, fake_label)
                 d_loss = d_real_loss + d_fake_loss
@@ -292,24 +292,24 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         if global_steps % (args.n_critic * args.accumulated_times) == 0:
             
             for accumulated_idx in range(args.g_accumulated_times):
-                gen_z = torch.cuda.FloatTensor(np.random.normal(0, 1, (args.gen_batch_size, args.latent_dim)))
+                gen_z = torch.tensor(np.random.normal(0, 1, (args.gen_batch_size, args.latent_dim)), dtype=torch.float32, device=args.device)
                 gen_imgs = gen_net(gen_z)
                 fake_validity = dis_net(gen_imgs)
 
                 # cal loss
                 loss_lz = torch.tensor(0)
                 if args.loss == "standard":
-                    real_label = torch.full((args.gen_batch_size,), 1., dtype=torch.float, device=real_imgs.get_device())
+                    real_label = torch.full((args.gen_batch_size,), 1., dtype=torch.float, device=args.device)
                     fake_validity = nn.Sigmoid()(fake_validity.view(-1))
                     g_loss = nn.BCELoss()(fake_validity.view(-1), real_label)
                 if args.loss == "lsgan":
                     if isinstance(fake_validity, list):
                         g_loss = 0
                         for fake_validity_item in fake_validity:
-                            real_label = torch.full((fake_validity_item.shape[0],fake_validity_item.shape[1]), 1., dtype=torch.float, device=real_imgs.get_device())
+                            real_label = torch.full((fake_validity_item.shape[0],fake_validity_item.shape[1]), 1., dtype=torch.float, device=args.device)
                             g_loss += nn.MSELoss()(fake_validity_item, real_label)
                     else:
-                        real_label = torch.full((fake_validity.shape[0],fake_validity.shape[1]), 1., dtype=torch.float, device=real_imgs.get_device())
+                        real_label = torch.full((fake_validity.shape[0],fake_validity.shape[1]), 1., dtype=torch.float, device=args.device)
                         # fake_validity = nn.Sigmoid()(fake_validity.view(-1))
                         g_loss = nn.MSELoss()(fake_validity, real_label)
                 elif args.loss == 'wgangp-mode':
@@ -395,7 +395,7 @@ def get_is(args, gen_net: nn.Module, num_img):
     eval_iter = num_img // args.eval_batch_size
     img_list = list()
     for _ in range(eval_iter):
-        z = torch.cuda.FloatTensor(np.random.normal(0, 1, (args.eval_batch_size, args.latent_dim)))
+        z = torch.tensor(np.random.normal(0, 1, (args.eval_batch_size, args.latent_dim)), dtype=torch.float32, device=args.device)
 
         # Generate a batch of images
         gen_imgs = gen_net(z).mul_(127.5).add_(127.5).clamp_(0.0, 255.0).permute(0, 2, 3, 1).to('cpu',
@@ -429,7 +429,7 @@ def validate(args, fixed_z, fid_stat, epoch, gen_net: nn.Module, writer_dict, cl
 #     eval_iter = args.num_eval_imgs // args.eval_batch_size
 #     img_list = list()
 #     for iter_idx in tqdm(range(eval_iter), desc='sample images'):
-#         z = torch.cuda.FloatTensor(np.random.normal(0, 1, (args.eval_batch_size, args.latent_dim)))
+#         z = torch.tensor(np.random.normal(0, 1, (args.eval_batch_size, args.latent_dim)), dtype=torch.float32, device=args.device)
     
 #         # Generate a batch of images
 #         gen_imgs = gen_net(z, epoch).mul_(127.5).add_(127.5).clamp_(0.0, 255.0).permute(0, 2, 3, 1).to('cpu',
@@ -557,7 +557,7 @@ def load_params(model, new_param, args, mode="gpu"):
         for p, new_p in zip(model.parameters(), new_param):
             cpu_p = deepcopy(new_p)
 #             p.data.copy_(cpu_p.cuda().to(f"cuda:{args.gpu}"))
-            p.data.copy_(cpu_p.cuda().to("cpu"))
+            p.data.copy_(cpu_p)
             del cpu_p
     
     else:

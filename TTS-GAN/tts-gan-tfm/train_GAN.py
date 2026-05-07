@@ -46,12 +46,13 @@ def main():
     
     if args.seed is not None:
         torch.manual_seed(args.random_seed)
-        torch.cuda.manual_seed(args.random_seed)
-        torch.cuda.manual_seed_all(args.random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(args.random_seed)
+            torch.cuda.manual_seed_all(args.random_seed)
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
         np.random.seed(args.random_seed)
         random.seed(args.random_seed)
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
 
     if args.gpu is not None:
         warnings.warn('You have chosen a specific GPU. This will completely '
@@ -76,7 +77,9 @@ def main():
         
 def main_worker(gpu, ngpus_per_node, args):
     args.gpu = gpu
-    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    args.device = device
+
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
 
@@ -172,8 +175,8 @@ def main_worker(gpu, ngpus_per_node, args):
         gen_net.cuda(args.gpu)
         dis_net.cuda(args.gpu)
     else:
-        gen_net = torch.nn.DataParallel(gen_net).cuda()
-        dis_net = torch.nn.DataParallel(dis_net).cuda()
+        gen_net = torch.nn.DataParallel(gen_net).to(device)
+        dis_net = torch.nn.DataParallel(dis_net).to(device)
     print(dis_net) if args.rank == 0 else 0
         
 
@@ -258,7 +261,7 @@ def main_worker(gpu, ngpus_per_node, args):
         args.max_epoch = np.ceil(args.max_iter * args.n_critic / len(train_loader))
 
     # initial
-    fixed_z = torch.cuda.FloatTensor(np.random.normal(0, 1, (100, args.latent_dim)))
+    fixed_z = torch.tensor(np.random.normal(0, 1, (100, args.latent_dim)), dtype=torch.float32, device=device)
     avg_gen_net = deepcopy(gen_net).cpu()
     gen_avg_param = copy_params(avg_gen_net)
     del avg_gen_net
@@ -272,7 +275,7 @@ def main_worker(gpu, ngpus_per_node, args):
         assert os.path.exists(args.load_path)
         checkpoint_file = os.path.join(args.load_path)
         assert os.path.exists(checkpoint_file)
-        loc = 'cuda:{}'.format(args.gpu)
+        loc = str(device)
         checkpoint = torch.load(checkpoint_file, map_location=loc)
         start_epoch = checkpoint['epoch']
         best_fid = checkpoint['best_fid']

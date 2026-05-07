@@ -96,4 +96,4 @@ def visualization (ori_data, generated_data, analysis, save_name):
 #         plt.show()    
         
     plt.savefig(f'./images/{save_name}.pdf', format="pdf")
-    plt.show()
+    plt.close()

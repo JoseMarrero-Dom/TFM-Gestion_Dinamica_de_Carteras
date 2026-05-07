@@ -6,9 +6,17 @@ from GANModels import Generator
 from dataLoader import portfolio_load_dataset
 from visualizationMetrics import visualization
 
-# 1) Cargar checkpoint
-ckpt_path = "/root/Home/UNIR/TFM/tfm/TTS-GAN/tts-gan-tfm/logs/Running_2026_05_07_19_32_14/Model/checkpoint"
-ckpt = torch.load(ckpt_path, map_location="cpu")
+# 1) Cargar checkpoint (el mas reciente de logs/)
+logs_dir = os.path.join(os.path.dirname(__file__), "logs")
+runs = sorted(
+    [d for d in os.listdir(logs_dir) if os.path.isdir(os.path.join(logs_dir, d))],
+    reverse=True
+)
+if not runs:
+    raise FileNotFoundError(f"No hay experimentos en {logs_dir}")
+ckpt_path = os.path.join(logs_dir, runs[0], "Model", "checkpoint")
+print(f"Cargando checkpoint: {ckpt_path}")
+ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
 # 2) Instanciar generador con los mismos parametros del entrenamiento
 gen = Generator(seq_len=150, patch_size=15, channels=1, latent_dim=100)
