@@ -20,7 +20,7 @@ os.system(f"CUDA_VISIBLE_DEVICES=0 python train_GAN.py \
 --world-size 1 \
 --rank {args.rank} \
 --bottom_width 8 \
---max_iter 500000 \
+--max_iter 250000 \
 --img_size 32 \
 --gen_model my_gen \
 --dis_model my_dis \
