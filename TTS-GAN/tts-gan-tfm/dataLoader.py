@@ -40,7 +40,7 @@ class portfolio_load_dataset(Dataset):
 		is_normalize: bool = True,
 		normalize_mode: str = "zscore",
 		label_mode: str = "dummy",
-		filter_regime: Optional[str] = None,
+		filter_regime: Optional[List[str]] = None,
 		include_vix: bool = False,
 		cache_dir: str = "./data_cache",
 		cache_prefix: str = "portfolio",
@@ -54,8 +54,8 @@ class portfolio_load_dataset(Dataset):
 			raise ValueError("stride must be > 0.")
 		if label_mode not in ("dummy", "regime"):
 			raise ValueError("label_mode must be 'dummy' or 'regime'.")
-		if filter_regime is not None and filter_regime not in REGIME_LABELS:
-			raise ValueError("filter_regime must be one of: low, moderate, stress.")
+		if filter_regime is not None and not all(r in REGIME_LABELS for r in filter_regime):
+			raise ValueError("filter_regime must be a list containing only: low, moderate, stress.")
 
 		self.data_mode = data_mode
 		self.start = start
@@ -177,7 +177,7 @@ class portfolio_load_dataset(Dataset):
 			if regime_series is not None:
 				end_date = df.index[end - 1]
 				regime = regime_series.loc[end_date]
-				if self.filter_regime is not None and regime != self.filter_regime:
+				if self.filter_regime is not None and regime not in self.filter_regime:
 					continue
 				if self.label_mode == "regime":
 					labels.append(REGIME_TO_ID[regime])

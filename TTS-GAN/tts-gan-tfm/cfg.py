@@ -215,6 +215,7 @@ def parse_args():
         help='Label mode for dataset windows.')
     parser.add_argument(
         '--filter_regime',
+        nargs='+',
         type=str,
         default=None,
         choices=['low', 'moderate', 'stress'],
