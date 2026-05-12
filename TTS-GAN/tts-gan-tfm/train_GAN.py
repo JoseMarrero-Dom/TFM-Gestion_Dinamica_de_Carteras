@@ -120,7 +120,9 @@ def main_worker(gpu, ngpus_per_node, args):
     # dataset-driven model config
     if args.dataset.lower() == "portfolio":
         asset_list = [args.asset] if args.asset else None
-        args.channels = 1 if asset_list else len(dl.DEFAULT_TICKERS)
+        n_assets = 1 if asset_list else len(dl.DEFAULT_TICKERS)
+        channels_per_asset = 3 if getattr(args, 'use_intraday', False) else 1
+        args.channels = n_assets * channels_per_asset
         seq_len = args.window_length
         if seq_len % args.patch_size != 0:
             if seq_len % 15 == 0:
@@ -226,6 +228,7 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize_mode=args.normalize_mode,
             label_mode=args.label_mode,
             filter_regime=args.filter_regime,
+            use_intraday=getattr(args, 'use_intraday', False),
         )
         train_loader = data.DataLoader(
             train_set,
@@ -316,6 +319,10 @@ def main_worker(gpu, ngpus_per_node, args):
         'valid_global_steps': start_epoch // args.val_freq,
     }
 
+    import time
+    _train_start = time.time()
+    _total_epochs = int(args.max_epoch) - int(start_epoch)
+
     # train loop
     for epoch in range(int(start_epoch), int(args.max_epoch)):
 #         train_sampler.set_epoch(epoch)
@@ -331,7 +338,18 @@ def main_worker(gpu, ngpus_per_node, args):
 #             #only train discriminator 
 #             train_d(args, gen_net, dis_net, dis_optimizer, train_loader, epoch, writer_dict,fixed_z, lr_schedulers)
         train(args, gen_net, dis_net, gen_optimizer, dis_optimizer, gen_avg_param, train_loader, epoch, writer_dict,fixed_z, lr_schedulers)
-        
+
+        if args.rank == 0:
+            _done = epoch - int(start_epoch) + 1
+            _elapsed = time.time() - _train_start
+            _secs_per_epoch = _elapsed / _done
+            _remaining = _secs_per_epoch * (_total_epochs - _done)
+            _h, _r = divmod(int(_remaining), 3600)
+            _m, _s = divmod(_r, 60)
+            _pct = 100 * _done / _total_epochs
+            print(f"[{_pct:.1f}%] epoch {epoch+1}/{int(args.max_epoch)} — "
+                  f"{_secs_per_epoch:.1f}s/epoch — ETA: {_h:02d}h{_m:02d}m{_s:02d}s")
+
         if args.rank == 0 and args.show:
             backup_param = copy_params(gen_net)
             load_params(gen_net, gen_avg_param, args, mode="cpu")

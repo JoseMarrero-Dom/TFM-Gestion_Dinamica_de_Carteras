@@ -202,6 +202,11 @@ def parse_args():
         default=True,
         help='Use log returns instead of pct change.')
     parser.add_argument(
+        '--use_intraday',
+        action='store_true',
+        default=False,
+        help='Añade canales intraday y overnight por activo (2 canales por activo en lugar de 1).')
+    parser.add_argument(
         '--normalize_mode',
         type=str,
         default='zscore',

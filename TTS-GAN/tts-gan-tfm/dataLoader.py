@@ -42,6 +42,7 @@ class portfolio_load_dataset(Dataset):
 		label_mode: str = "dummy",
 		filter_regime: Optional[List[str]] = None,
 		include_vix: bool = False,
+		use_intraday: bool = False,
 		cache_dir: str = "./data_cache",
 		cache_prefix: str = "portfolio",
 		verbose: bool = False,
@@ -71,13 +72,14 @@ class portfolio_load_dataset(Dataset):
 		self.normalize_mode = normalize_mode
 		self.label_mode = label_mode
 		self.filter_regime = filter_regime
+		self.use_intraday = use_intraday
 		self.include_vix = include_vix or (label_mode == "regime") or (filter_regime is not None)
 		self.cache_dir = cache_dir
 		self.cache_prefix = cache_prefix
 		self.verbose = verbose
 
-		prices, vix = self._load_prices_and_vix()
-		returns = self._compute_returns(prices)
+		prices, open_prices, high_prices, low_prices, vix = self._load_prices_and_vix()
+		returns = self._compute_returns(prices, open_prices, high_prices, low_prices)
 
 		train_df, test_df = self._split_data(returns)
 		df = train_df if self.data_mode == "Train" else test_df
@@ -100,23 +102,32 @@ class portfolio_load_dataset(Dataset):
 			print(f"windows shape: {self.data.shape}")
 			print(f"labels shape: {self.labels.shape}")
 
-	def _load_prices_and_vix(self) -> Tuple[pd.DataFrame, pd.Series]:
+	def _load_prices_and_vix(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series]:
 		os.makedirs(self.cache_dir, exist_ok=True)
 		safe_range = f"{self.start}_{self.end}".replace("-", "")
 		prices_path = os.path.join(self.cache_dir, f"{self.cache_prefix}_prices_{safe_range}.csv")
-		vix_path = os.path.join(self.cache_dir, f"{self.cache_prefix}_vix_{safe_range}.csv")
+		open_path   = os.path.join(self.cache_dir, f"{self.cache_prefix}_open_{safe_range}.csv")
+		high_path   = os.path.join(self.cache_dir, f"{self.cache_prefix}_high_{safe_range}.csv")
+		low_path    = os.path.join(self.cache_dir, f"{self.cache_prefix}_low_{safe_range}.csv")
+		vix_path    = os.path.join(self.cache_dir, f"{self.cache_prefix}_vix_{safe_range}.csv")
 
-		if os.path.isfile(prices_path):
-			prices = pd.read_csv(prices_path, index_col=0, parse_dates=True)
-		else:
-			raw_prices = {}
+		def _download_col(col: str, path: str) -> pd.DataFrame:
+			if os.path.isfile(path):
+				return pd.read_csv(path, index_col=0, parse_dates=True)
+			raw = {}
 			for name, ticker in self.tickers.items():
 				data = yf.download(ticker, start=self.start, end=self.end, auto_adjust=True, progress=False)
-				if data.empty or "Close" not in data.columns:
-					raise RuntimeError(f"No data returned for ticker {ticker}.")
-				raw_prices[name] = data["Close"].squeeze()
-			prices = pd.DataFrame(raw_prices).dropna()
-			prices.to_csv(prices_path)
+				if data.empty or col not in data.columns:
+					raise RuntimeError(f"No '{col}' data for ticker {ticker}.")
+				raw[name] = data[col].squeeze()
+			df = pd.DataFrame(raw).dropna()
+			df.to_csv(path)
+			return df
+
+		prices      = _download_col("Close", prices_path)
+		open_prices = _download_col("Open",  open_path)
+		high_prices = _download_col("High",  high_path)
+		low_prices  = _download_col("Low",   low_path)
 
 		if os.path.isfile(vix_path):
 			vix = pd.read_csv(vix_path, index_col=0, parse_dates=True).iloc[:, 0]
@@ -128,16 +139,41 @@ class portfolio_load_dataset(Dataset):
 				vix = vix_raw["Close"].squeeze()
 			vix.to_csv(vix_path)
 
-		prices = prices[self.assets]
-		return prices, vix
+		return prices[self.assets], open_prices[self.assets], high_prices[self.assets], low_prices[self.assets], vix
 
-	def _compute_returns(self, prices: pd.DataFrame) -> pd.DataFrame:
-		if self.log_returns:
-			returns = np.log(prices / prices.shift(1))
-		else:
-			returns = prices.pct_change()
-		returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
-		return returns
+	def _compute_returns(
+		self,
+		prices: pd.DataFrame,
+		open_prices: pd.DataFrame,
+		high_prices: pd.DataFrame,
+		low_prices: pd.DataFrame,
+	) -> pd.DataFrame:
+		if not self.use_intraday:
+			if self.log_returns:
+				returns = np.log(prices / prices.shift(1))
+			else:
+				returns = prices.pct_change()
+			returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+			return returns
+
+		# Canal 1: log return close-to-close — dirección y magnitud del día
+		log_ret = np.log(prices / prices.shift(1))
+		# Canal 2: rango open-close — si el día cerró alcista o bajista
+		oc_range = np.log(prices / open_prices.reindex(prices.index))
+		# Canal 3: rango high-low — volatilidad intradía (siempre positivo)
+		hl_range = np.log(high_prices.reindex(prices.index) / low_prices.reindex(prices.index))
+
+		log_ret.columns  = [f"{c}_logret"   for c in log_ret.columns]
+		oc_range.columns = [f"{c}_oc_range"  for c in oc_range.columns]
+		hl_range.columns = [f"{c}_hl_range"  for c in hl_range.columns]
+
+		# Intercalar por activo: SP500_logret, SP500_oc_range, SP500_hl_range, ...
+		combined = pd.concat([log_ret, oc_range, hl_range], axis=1)
+		ordered_cols = [col for a in self.assets for col in (f"{a}_logret", f"{a}_oc_range", f"{a}_hl_range")]
+		combined = combined[ordered_cols]
+
+		combined = combined.replace([np.inf, -np.inf], np.nan).dropna()
+		return combined
 
 	def _split_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 		if self.split_date:
