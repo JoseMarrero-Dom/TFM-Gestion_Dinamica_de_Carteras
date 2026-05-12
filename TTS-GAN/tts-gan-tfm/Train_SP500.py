@@ -20,7 +20,6 @@ os.system(f"CUDA_VISIBLE_DEVICES=0 python train_GAN.py \
 --stride 1 \
 --normalize_mode zscore \
 --log_returns True \
---label_mode dummy \
 --filter_regime moderate stress \
 --use_intraday \
 --world-size 1 \

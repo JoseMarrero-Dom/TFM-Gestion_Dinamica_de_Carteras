@@ -228,7 +228,7 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize_mode=args.normalize_mode,
             label_mode=args.label_mode,
             filter_regime=args.filter_regime,
-            use_intraday=getattr(args, 'use_intraday', False),
+            use_intraday=True,
         )
         train_loader = data.DataLoader(
             train_set,
@@ -248,6 +248,7 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize_mode=args.normalize_mode,
             label_mode=args.label_mode,
             filter_regime=args.filter_regime,
+            use_intraday=True,
         )
         test_loader = data.DataLoader(
             test_set,

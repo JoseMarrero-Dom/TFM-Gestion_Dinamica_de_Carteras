@@ -19,7 +19,7 @@ print(f"Cargando checkpoint: {ckpt_path}")
 ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
 # 2) Instanciar generador con los mismos parametros del entrenamiento
-gen = Generator(seq_len=150, patch_size=15, channels=1, latent_dim=256)
+gen = Generator(seq_len=150, patch_size=15, channels=3, latent_dim=256)
 gen.load_state_dict(ckpt["avg_gen_state_dict"])  # o "gen_state_dict"
 gen.eval()
 
@@ -33,7 +33,8 @@ real_set = portfolio_load_dataset(
     log_returns=True,
     normalize_mode="zscore",
     label_mode="regime",
-    filter_regime=["stress"],
+    filter_regime=["moderate", "stress"],
+    use_intraday=True,
 )
 
 N = min(1000, len(real_set))

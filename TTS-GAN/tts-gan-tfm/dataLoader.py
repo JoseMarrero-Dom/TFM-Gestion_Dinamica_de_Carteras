@@ -45,6 +45,7 @@ class portfolio_load_dataset(Dataset):
 		use_intraday: bool = False,
 		cache_dir: str = "./data_cache",
 		cache_prefix: str = "portfolio",
+		use_windows: bool = True,
 		verbose: bool = False,
 	) -> None:
 		if data_mode not in ("Train", "Test"):
@@ -76,6 +77,7 @@ class portfolio_load_dataset(Dataset):
 		self.include_vix = include_vix or (label_mode == "regime") or (filter_regime is not None)
 		self.cache_dir = cache_dir
 		self.cache_prefix = cache_prefix
+		self.use_windows = use_windows
 		self.verbose = verbose
 
 		prices, open_prices, high_prices, low_prices, vix = self._load_prices_and_vix()
@@ -89,8 +91,13 @@ class portfolio_load_dataset(Dataset):
 			vix = vix.reindex(returns.index).ffill()
 			regime_series = self._classify_regime(vix)
 			regime_series = regime_series.reindex(df.index)
-
-		windows, labels = self._build_windows(df, regime_series)
+	
+		if self.use_windows:
+			windows, labels = self._build_windows(df, regime_series)
+		else:
+			values = df.values.astype(np.float32)        # (T, m)
+			windows = values[None, :, :]                 # (1, T, m)
+			labels = np.zeros((1,), dtype=np.int64)      # dummy
 
 		if self.is_normalize:
 			windows = self._normalize_windows(windows)
