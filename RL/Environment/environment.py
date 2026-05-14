@@ -1,0 +1,99 @@
+'''
+Portfolio management environment for reinforcement learning agents.
+This environment simulates a financial market where an agent can allocate its portfolio among different assets. 
+The agent receives observations about the market and takes actions to adjust its portfolio allocation. 
+The goal is to maximize the cumulative return over time while managing risk.
+The reward is based on the Sharpe ratio, which considers both the return and the volatility of the portfolio and a penalty for the volume of allocations.
+The portfolio has 6 assets and cash, and the agent can allocate its portfolio among these assets and cash.
+The starting vector is [0, 0, 0, 0, 0, 0, 1], which means that the agent starts with all its capital in cash.
+The action space is a continuous space where the agent can allocate its portfolio among the 6 assets and cash. 
+The action is a vector of length 7, where each element represents the allocation to a specific asset or cash. 
+The sum of the allocations must be equal to 1, which means that the agent must allocate all its capital among the assets and cash. 
+The action space is defined as a Box space with shape (7,) and bounds [0, 1] for each element.
+Each step, represents a day in the market, and the agent receives a new observation of the market state,
+which includes the log-returns of the assets, open - close ranges and maximun - minimum ranges, the Vix value and a prediction of the values.
+'''
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
+import torch
+import matplotlib.pyplot as plt
+
+# from IPM import IPMModule
+
+class PortfolioEnv(gym.Env):
+    def __init__(self, data):
+        super(PortfolioEnv, self).__init__()
+        self.data = data
+        #self.ipm_module = ipm_module
+        self.current_step = 0
+        self.num_assets = 6  # 6 assets + cash
+        self.action_space = spaces.Box(low=0, high=1, shape=(self.num_assets + 1,), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(19 + self.num_assets + 1,),  # 19 + 7 = 26
+            dtype=np.float32
+        )
+        self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
+        self.weights[-1] = 1.0  # todo en cash al inicio
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.current_step = 1 # start at 1 to have a previous step for observations
+        self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
+        self.weights[-1] = 1.0  # todo en cash al inicio
+        return self._get_observation(step=self.current_step - 1), {}
+
+    def step(self, action):
+        w_target = self._action_to_weights(action)
+
+        # retornos del dia t (current_step)
+        market_data = self.data[self.current_step]
+        log_returns = market_data[0: self.num_assets * 3: 3]
+        price_rel = np.exp(log_returns)
+        price_rel_full = np.concatenate([price_rel, [1.0]])
+
+        portfolio_relative = np.dot(w_target, price_rel_full)
+        reward = np.log(portfolio_relative + 1e-8)
+
+        # drift al cierre
+        self.weights = (w_target * price_rel_full) / (portfolio_relative + 1e-8)
+
+        # avanzar a dia t+1
+        self.current_step += 1
+        terminated = self.current_step >= len(self.data)
+        obs = self._get_observation(step=self.current_step - 1)
+
+        return obs, reward, terminated, False, {}
+    
+    def _action_to_weights(self, action):
+        x = action - np.max(action)
+        exp = np.exp(x)
+        return exp / (exp.sum() + 1e-8)
+
+    def _get_observation(self, step=None):
+        idx = self.current_step if step is None else step
+        market_data = self.data[idx]
+        return np.concatenate([market_data, self.weights]).astype(np.float32)
+
+    def _calculate_reward(self, weights):
+        market_data = self.data[self.current_step]
+
+        log_returns = market_data[0: self.num_assets * 3: 3]
+        price_rel = np.exp(log_returns)
+        price_rel_full = np.concatenate([price_rel, [1.0]])
+
+        portfolio_relative = np.dot(weights, price_rel_full)
+        reward = np.log(portfolio_relative + 1e-8)
+
+        # pesos despues del movimiento del mercado (drift)
+        self.weights = (weights * price_rel_full) / (portfolio_relative + 1e-8)
+        return reward
+
+    def _plot_weights(self, weights, step, every=200):
+        if step % every != 0:
+            return
+        labels = [f"a{i+1}" for i in range(self.num_assets)] + ["cash"]
+        pairs = ", ".join(f"{k}={v:.3f}" for k, v in zip(labels, weights))
+        print(f"[step {step}] {pairs}")

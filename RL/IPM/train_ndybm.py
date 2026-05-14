@@ -12,12 +12,17 @@ from dataLoader import portfolio_load_dataset
 
 dataset = portfolio_load_dataset(
     data_mode="Train",
-    is_normalize=True,
-    normalize_mode="zscore",
+    is_normalize=False,
     log_returns=True,
     use_intraday=True,
     use_windows=False  # queremos la serie completa para el DyBM
 )
+
+# Imprimir primeras filas del dataset para verificar
+print("Shape del dataset:", dataset.data.shape)
+print("Primeras filas del dataset:")
+# Mostrar headers y primeras filas
+print(dataset.data[:1])  # muestra las primeras 5 filas del dataset
 
 m = dataset.data.shape[1]  # canales = 3 * n_activos
 model = RNNGaussianDyBM(
