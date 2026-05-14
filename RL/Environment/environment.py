@@ -37,12 +37,17 @@ class PortfolioEnv(gym.Env):
         )
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
         self.weights[-1] = 1.0  # todo en cash al inicio
+        self._A = 0.0
+        self._B = 0.0
+        self.eta = 0.01
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 1 # start at 1 to have a previous step for observations
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
         self.weights[-1] = 1.0  # todo en cash al inicio
+        self._A = 0.0
+        self._B = 0.0
         return self._get_observation(step=self.current_step - 1), {}
 
     def step(self, action):
@@ -55,7 +60,8 @@ class PortfolioEnv(gym.Env):
         price_rel_full = np.concatenate([price_rel, [1.0]])
 
         portfolio_relative = np.dot(w_target, price_rel_full)
-        reward = np.log(portfolio_relative + 1e-8)
+        port_ret = np.log(portfolio_relative + 1e-8)
+        reward = self._dsr(port_ret)
 
         # drift al cierre
         self.weights = (w_target * price_rel_full) / (portfolio_relative + 1e-8)
@@ -77,19 +83,14 @@ class PortfolioEnv(gym.Env):
         market_data = self.data[idx]
         return np.concatenate([market_data, self.weights]).astype(np.float32)
 
-    def _calculate_reward(self, weights):
-        market_data = self.data[self.current_step]
-
-        log_returns = market_data[0: self.num_assets * 3: 3]
-        price_rel = np.exp(log_returns)
-        price_rel_full = np.concatenate([price_rel, [1.0]])
-
-        portfolio_relative = np.dot(weights, price_rel_full)
-        reward = np.log(portfolio_relative + 1e-8)
-
-        # pesos despues del movimiento del mercado (drift)
-        self.weights = (weights * price_rel_full) / (portfolio_relative + 1e-8)
-        return reward
+    def _dsr(self, r: float) -> float:
+        dA    = r - self._A
+        dB    = r ** 2 - self._B
+        denom = max((self._B - self._A ** 2) ** 0.5, 1e-8)
+        dsr   = (self._B * dA - 0.5 * self._A * dB) / denom ** 3
+        self._A += self.eta * dA
+        self._B += self.eta * dB
+        return float(dsr)
 
     def _plot_weights(self, weights, step, every=200):
         if step % every != 0:
