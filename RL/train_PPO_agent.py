@@ -36,18 +36,26 @@ def load_features(data_mode="Train", cache_dir="./data_cache"):
 
 def evaluate_and_plot(model, env, freq=252, var_conf=0.95, out_path=None):
     def action_to_weights(action):
-        x = action - np.max(action)
-        exp = np.exp(x)
-        return exp / (exp.sum() + 1e-8)
+        x = np.maximum(action, 0.0)
+        s = x.sum()
+        if s < 1e-8:
+            w = np.zeros_like(x)
+            w[-1] = 1.0
+            return w
+        return x / s
+
+    asset_names = ["SP500", "MSCI_EAFE", "MSCI_EM", "Gold", "Oil_WTI", "UST10Y", "Cash"]
 
     obs, _ = env.reset()
     done = False
-    log_returns = []
-    equity = [1.0]
+    log_returns  = []
+    equity       = [1.0]
+    weights_hist = []
 
     while not done:
         action, _ = model.predict(obs, deterministic=True)
         weights = action_to_weights(action)
+        weights_hist.append(weights.copy())
 
         log_ret_assets = obs[0: env.num_assets * 3: 3]
         price_rel = np.exp(log_ret_assets)
@@ -60,8 +68,9 @@ def evaluate_and_plot(model, env, freq=252, var_conf=0.95, out_path=None):
         obs, _, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
-    log_returns = np.asarray(log_returns)
-    equity      = np.asarray(equity)
+    log_returns  = np.asarray(log_returns)
+    equity       = np.asarray(equity)
+    weights_hist = np.asarray(weights_hist)   # (T, 7)
 
     mean = log_returns.mean()
     std  = log_returns.std() + 1e-8
@@ -82,7 +91,7 @@ def evaluate_and_plot(model, env, freq=252, var_conf=0.95, out_path=None):
              f"MDD: {mdd:.2%}  |  VaR({int(var_conf*100)}%): {var:.4f}")
     print(title)
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=False)
+    fig, axes = plt.subplots(4, 1, figsize=(10, 11), sharex=False)
 
     axes[0].plot(equity)
     axes[0].set_title(title, fontsize=9)
@@ -100,10 +109,33 @@ def evaluate_and_plot(model, env, freq=252, var_conf=0.95, out_path=None):
     axes[2].set_xlabel("Log-return diario")
     axes[2].legend()
 
-    plt.tight_layout()
+    axes[3].boxplot(weights_hist, labels=asset_names, patch_artist=True)
+    axes[3].set_ylabel("Peso cartera")
+    margin = 0.05
+    ymin = max(0, weights_hist.min() - margin)
+    ymax = min(1, weights_hist.max() + margin)
+    axes[3].set_ylim(ymin, ymax)
+    axes[3].tick_params(axis="x", labelrotation=20)
 
+    plt.tight_layout()
     if out_path:
         plt.savefig(out_path, dpi=150)
+    else:
+        plt.show()
+
+    # figura separada: peso de cada activo día a día
+    n = len(asset_names)
+    fig2, axes2 = plt.subplots(n, 1, figsize=(10, 2 * n), sharex=True)
+    days = np.arange(len(weights_hist))
+    for i, name in enumerate(asset_names):
+        axes2[i].plot(days, weights_hist[:, i], linewidth=0.8)
+        axes2[i].set_ylabel(name, fontsize=8)
+        axes2[i].set_ylim(0, 1)
+    axes2[-1].set_xlabel("Día")
+    fig2.suptitle("Peso por activo (día a día)", fontsize=10)
+    plt.tight_layout()
+    if out_path:
+        fig2.savefig(out_path.replace(".", "_weights."), dpi=150)
     else:
         plt.show()
 
@@ -115,7 +147,7 @@ def main():
     env = PortfolioEnv(data)
 
     agent = PPOAgent(env)
-    agent.train(total_timesteps=200_000)
+    agent.train(total_timesteps=1_000_000)
     agent.save("ppo_portfolio")
 
     data_test = load_features(data_mode="Test", cache_dir="./data_cache")

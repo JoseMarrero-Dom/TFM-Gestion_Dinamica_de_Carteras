@@ -22,9 +22,10 @@ import matplotlib.pyplot as plt
 # from IPM import IPMModule
 
 class PortfolioEnv(gym.Env):
-    def __init__(self, data):
+    def __init__(self, data, transaction_cost: float = 0.003):
         super(PortfolioEnv, self).__init__()
         self.data = data
+        self.tc   = transaction_cost
         #self.ipm_module = ipm_module
         self.current_step = 0
         self.num_assets = 6  # 6 assets + cash
@@ -37,15 +38,15 @@ class PortfolioEnv(gym.Env):
         )
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
         self.weights[-1] = 1.0  # todo en cash al inicio
-        self._A = 0.0
-        self._B = 0.0
-        self.eta = 0.01
+        self._A   = 0.0
+        self._B   = 0.0
+        self.eta  = 0.01
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        self.current_step = 1 # start at 1 to have a previous step for observations
+        self.current_step = 1
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
-        self.weights[-1] = 1.0  # todo en cash al inicio
+        self.weights[-1] = 1.0
         self._A = 0.0
         self._B = 0.0
         return self._get_observation(step=self.current_step - 1), {}
@@ -60,8 +61,9 @@ class PortfolioEnv(gym.Env):
         price_rel_full = np.concatenate([price_rel, [1.0]])
 
         portfolio_relative = np.dot(w_target, price_rel_full)
-        port_ret = np.log(portfolio_relative + 1e-8)
-        reward = self._dsr(port_ret)
+        port_ret = float(np.log(portfolio_relative + 1e-8))
+        turnover = float(np.abs(w_target - self.weights).sum())
+        reward   = self._dsr(port_ret) - self.tc * turnover
 
         # drift al cierre
         self.weights = (w_target * price_rel_full) / (portfolio_relative + 1e-8)
@@ -74,9 +76,13 @@ class PortfolioEnv(gym.Env):
         return obs, reward, terminated, False, {}
     
     def _action_to_weights(self, action):
-        x = action - np.max(action)
-        exp = np.exp(x)
-        return exp / (exp.sum() + 1e-8)
+        x = np.maximum(action, 0.0)   # ReLU: negativos → 0 exacto
+        s = x.sum()
+        if s < 1e-8:                  # si todo es 0, todo a cash
+            w = np.zeros_like(x)
+            w[-1] = 1.0
+            return w
+        return x / s
 
     def _get_observation(self, step=None):
         idx = self.current_step if step is None else step
@@ -91,6 +97,20 @@ class PortfolioEnv(gym.Env):
         self._A += self.eta * dA
         self._B += self.eta * dB
         return float(dsr)
+
+    def _calculate_reward(self, weights):
+        market_data = self.data[self.current_step]
+
+        log_returns = market_data[0: self.num_assets * 3: 3]
+        price_rel = np.exp(log_returns)
+        price_rel_full = np.concatenate([price_rel, [1.0]])
+
+        portfolio_relative = np.dot(weights, price_rel_full)
+        reward = np.log(portfolio_relative + 1e-8)
+
+        # pesos despues del movimiento del mercado (drift)
+        self.weights = (weights * price_rel_full) / (portfolio_relative + 1e-8)
+        return reward
 
     def _plot_weights(self, weights, step, every=200):
         if step % every != 0:
