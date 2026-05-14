@@ -34,7 +34,7 @@ def load_features(data_mode="Train", cache_dir="./data_cache"):
     data = np.concatenate([features, vix], axis=1)
     return data
 
-def evaluate_and_plot(model, env, freq=252, out_path=None):
+def evaluate_and_plot(model, env, freq=252, var_conf=0.95, out_path=None):
     def action_to_weights(action):
         x = action - np.max(action)
         exp = np.exp(x)
@@ -49,7 +49,6 @@ def evaluate_and_plot(model, env, freq=252, out_path=None):
         action, _ = model.predict(obs, deterministic=True)
         weights = action_to_weights(action)
 
-        # log-returns en indices 0,3,6,9,12,15
         log_ret_assets = obs[0: env.num_assets * 3: 3]
         price_rel = np.exp(log_ret_assets)
         portfolio_rel = np.dot(weights[:env.num_assets], price_rel) + weights[-1]
@@ -62,22 +61,45 @@ def evaluate_and_plot(model, env, freq=252, out_path=None):
         done = terminated or truncated
 
     log_returns = np.asarray(log_returns)
-    equity = np.asarray(equity)
+    equity      = np.asarray(equity)
 
     mean = log_returns.mean()
-    std = log_returns.std() + 1e-8
-    sharpe = np.sqrt(freq) * mean / std
+    std  = log_returns.std() + 1e-8
 
-    peak = np.maximum.accumulate(equity)
+    sharpe  = np.sqrt(freq) * mean / std
+
+    downside = log_returns[log_returns < 0]
+    semi_std = np.sqrt((downside ** 2).mean()) if len(downside) > 0 else 1e-8
+    sortino  = np.sqrt(freq) * mean / semi_std
+
+    peak     = np.maximum.accumulate(equity)
     drawdown = equity / peak - 1.0
-    mdd = drawdown.min()
+    mdd      = drawdown.min()
 
-    fig, ax = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    ax[0].plot(equity, label="Equity")
-    ax[0].set_title(f"Sharpe: {sharpe:.2f}  |  MDD: {mdd:.2%}")
-    ax[0].legend()
-    ax[1].plot(drawdown, color="red", label="Drawdown")
-    ax[1].legend()
+    var = np.percentile(log_returns, (1 - var_conf) * 100)   # pérdida diaria en el peor X%
+
+    title = (f"Sharpe: {sharpe:.2f}  |  Sortino: {sortino:.2f}  |  "
+             f"MDD: {mdd:.2%}  |  VaR({int(var_conf*100)}%): {var:.4f}")
+    print(title)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=False)
+
+    axes[0].plot(equity)
+    axes[0].set_title(title, fontsize=9)
+    axes[0].set_ylabel("Equity")
+
+    axes[1].plot(drawdown, color="red")
+    axes[1].axhline(mdd, color="darkred", linestyle="--", linewidth=0.8, label=f"MDD {mdd:.2%}")
+    axes[1].set_ylabel("Drawdown")
+    axes[1].legend()
+
+    axes[2].hist(log_returns, bins=60, color="steelblue", edgecolor="none")
+    axes[2].axvline(var, color="red",    linestyle="--", linewidth=1.2, label=f"VaR {var:.4f}")
+    axes[2].axvline(mean, color="green", linestyle="--", linewidth=1.2, label=f"Media {mean:.4f}")
+    axes[2].set_ylabel("Frecuencia")
+    axes[2].set_xlabel("Log-return diario")
+    axes[2].legend()
+
     plt.tight_layout()
 
     if out_path:
@@ -85,7 +107,7 @@ def evaluate_and_plot(model, env, freq=252, out_path=None):
     else:
         plt.show()
 
-    return sharpe, mdd
+    return {"sharpe": sharpe, "sortino": sortino, "mdd": mdd, "var": var}
 
 def main():
     data = load_features(data_mode="Train", cache_dir="./data_cache")
@@ -96,8 +118,10 @@ def main():
     agent.train(total_timesteps=200_000)
     agent.save("ppo_portfolio")
 
-    sharpe, mdd = evaluate_and_plot(agent.model, env, freq=252, out_path="eval_metrics.png")
-    print("Sharpe:", sharpe, "MDD:", mdd)
+    data_test = load_features(data_mode="Test", cache_dir="./data_cache")
+    env_test  = PortfolioEnv(data_test)
+    metrics   = evaluate_and_plot(agent.model, env_test, freq=252, out_path="eval_metrics.png")
+    print(metrics)
 
 if __name__ == "__main__":
     main()
