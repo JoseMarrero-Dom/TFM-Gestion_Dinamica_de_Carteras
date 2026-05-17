@@ -3,7 +3,7 @@ Portfolio management environment for reinforcement learning agents.
 This environment simulates a financial market where an agent can allocate its portfolio among different assets. 
 The agent receives observations about the market and takes actions to adjust its portfolio allocation. 
 The goal is to maximize the cumulative return over time while managing risk.
-The reward is based on log-return with a penalty for turnover.
+The reward is based on the Sharpe ratio, which considers both the return and the volatility of the portfolio and a penalty for the volume of allocations.
 The portfolio has 6 assets and cash, and the agent can allocate its portfolio among these assets and cash.
 The starting vector is [0, 0, 0, 0, 0, 0, 1], which means that the agent starts with all its capital in cash.
 The action space is a continuous space where the agent can allocate its portfolio among the 6 assets and cash. 
@@ -16,15 +16,18 @@ which includes the log-returns of the assets, open - close ranges and maximun - 
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+import torch
+import matplotlib.pyplot as plt
 
-# from IPM import IPMModule
+from IPM.ipm import IPMModule
 
 class PortfolioEnv(gym.Env):
-    def __init__(self, data, transaction_cost: float = 0.002, debug=False, debug_every=200):
+    def __init__(self, data, transaction_cost: float = 0.002, ipm_module=None, debug=False, debug_every=200):
         super(PortfolioEnv, self).__init__()
         self.data = data
         self.tc   = transaction_cost
-        #self.ipm_module = ipm_module
+        self.ipm_module = ipm_module
+        self.ipm_dim = ipm_module.m if ipm_module is not None else 0
         self.debug = debug
         self.debug_every = debug_every
         self._debug_buf = []
@@ -34,7 +37,7 @@ class PortfolioEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(19 + self.num_assets + 1,),  # 19 + 7 = 26
+            shape=(19 + self.num_assets + 1 + self.ipm_dim,),  # 19 + 7 = 28
             dtype=np.float32
         )
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
@@ -57,6 +60,8 @@ class PortfolioEnv(gym.Env):
                 arr["turnover"].mean(), arr["turnover"].min(), arr["turnover"].max()
             )
         self._debug_buf = []
+        if self.ipm_module is not None:
+            self.ipm_module.reset()
         self.current_step = 1
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
         self.weights[-1] = 1.0
@@ -74,7 +79,9 @@ class PortfolioEnv(gym.Env):
         portfolio_relative = np.dot(w_target, price_rel_full)
         port_ret = float(np.log(portfolio_relative + 1e-8))
         turnover = float(np.abs(w_target - self.weights).sum())
+
         reward = port_ret - self.tc * turnover
+
         if self.debug and (self.current_step % self.debug_every == 0):
             self._debug_buf.append({
                 "port_ret": port_ret,
@@ -104,7 +111,23 @@ class PortfolioEnv(gym.Env):
     def _get_observation(self, step=None):
         idx = self.current_step if step is None else step
         market_data = self.data[idx]
-        return np.concatenate([market_data, self.weights]).astype(np.float32)
+        pred = np.zeros(self.ipm_dim, dtype=np.float32)
+        if self.ipm_module is not None:
+            # Opcion A: usar las 18 features (sin VIX)
+            x_t = torch.tensor(market_data[: self.num_assets * 3], dtype=torch.float32)
+            pred = self.ipm_module.step(x_t).numpy()
+        obs = np.concatenate([market_data, pred, self.weights]).astype(np.float32)
+        return obs
+
+    def _dsr(self, r: float) -> float:
+        dA    = r - self._A
+        dB    = r ** 2 - self._B
+        var = max(self._B - self._A ** 2, 1e-4)  # o 1e-6
+        denom = var ** 0.5
+        dsr   = (self._B * dA - 0.5 * self._A * dB) / denom ** 3
+        self._A += self.eta * dA
+        self._B += self.eta * dB
+        return float(dsr)
 
     def _calculate_reward(self, weights):
         market_data = self.data[self.current_step]

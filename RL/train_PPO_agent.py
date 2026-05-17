@@ -5,7 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from Environment.environment import PortfolioEnv
+from Environment.environment_IPM import PortfolioEnv as PortfolioEnvIPM
 from PPO.agent import PPOAgent
+from IPM.ipm import IPMModule
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../TTS-GAN/tts-gan-tfm"))
 sys.path.insert(0, ROOT)
@@ -144,14 +146,17 @@ def evaluate_and_plot(model, env, freq=252, var_conf=0.95, out_path=None):
 def main():
     data = load_features(data_mode="Train", cache_dir="./data_cache")
 
-    env = PortfolioEnv(data)
+    ipm = IPMModule(m=18)
+    env = PortfolioEnvIPM(data, ipm_module=ipm, debug=True, debug_every=1)
+    # env = PortfolioEnv(data, debug=True)  # usar este env sin IPM
 
     agent = PPOAgent(env)
     agent.train(total_timesteps=1_000_000)
     agent.save("ppo_portfolio")
 
     data_test = load_features(data_mode="Test", cache_dir="./data_cache")
-    env_test  = PortfolioEnv(data_test)
+    env_test  = PortfolioEnvIPM(data_test, ipm_module=ipm, debug=True)
+    # env_test  = PortfolioEnv(data_test)
     metrics   = evaluate_and_plot(agent.model, env_test, freq=252, out_path="eval_metrics.png")
     print(metrics)
 
