@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from IPM.ipm import IPMModule
 
 class PortfolioEnv(gym.Env):
-    def __init__(self, data, transaction_cost: float = 0.002, ipm_module=None, debug=False, debug_every=200):
+    def __init__(self, data, transaction_cost: float = 0.001, ipm_module=None, debug=False, debug_every=200, window_size=5, rebalance_freq=5, episode_weeks=52):
         super(PortfolioEnv, self).__init__()
         self.data = data
         self.tc   = transaction_cost
@@ -33,13 +33,14 @@ class PortfolioEnv(gym.Env):
         self._debug_buf = []
         self.current_step = 0
         self.num_assets = 6  # 6 assets + cash
+        self.window_size = window_size
+        self.rebalance_freq = rebalance_freq
+        self.episode_days = episode_weeks * rebalance_freq if episode_weeks is not None else None
+        self.features_per_day = 19  # 18 features + VIX
         self.action_space = spaces.Box(low=0, high=1, shape=(self.num_assets + 1,), dtype=np.float32)
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(19 + self.num_assets + 1 + self.ipm_dim,),  # 19 + 7 = 28
-            dtype=np.float32
-        )
+        # window_size log-returns por activo + features del día actual + ipm + pesos
+        obs_dim = self.num_assets * window_size + self.features_per_day + self.ipm_dim + self.num_assets + 1
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
         self.weights[-1] = 1.0  # todo en cash al inicio
 
@@ -60,43 +61,54 @@ class PortfolioEnv(gym.Env):
                 arr["turnover"].mean(), arr["turnover"].min(), arr["turnover"].max()
             )
         self._debug_buf = []
+        if self.episode_days is not None:
+            max_start = len(self.data) - self.episode_days - 1
+            start = int(self.np_random.integers(self.window_size, max(self.window_size + 1, max_start)))
+            self.current_step = start
+            self.episode_end = start + self.episode_days
+        else:
+            self.current_step = self.window_size
+            self.episode_end = len(self.data)
+        # warm-up del IPM: corre los días anteriores al inicio para que su estado sea coherente
         if self.ipm_module is not None:
             self.ipm_module.reset()
-        self.current_step = 1
+            for i in range(self.current_step - self.window_size, self.current_step):
+                x = torch.tensor(self.data[i][: self.num_assets * 3], dtype=torch.float32)
+                self.ipm_module.step(x)
         self.weights = np.zeros(self.num_assets + 1, dtype=np.float32)
         self.weights[-1] = 1.0
         return self._get_observation(step=self.current_step - 1), {}
 
     def step(self, action):
-        w_target = self._action_to_weights(action)
+        w = self._action_to_weights(action)
+        turnover = float(np.abs(w - self.weights).sum())
+        total_log_ret = 0.0
 
-        # retornos del dia t (current_step)
-        market_data = self.data[self.current_step]
-        log_returns = market_data[0: self.num_assets * 3: 3]
-        price_rel = np.exp(log_returns)
-        price_rel_full = np.concatenate([price_rel, [1.0]])
+        # avanza rebalance_freq días con drift natural; el agente no toca nada
+        for _ in range(self.rebalance_freq):
+            if self.current_step >= len(self.data):
+                break
+            market_data = self.data[self.current_step]
+            log_ret_day = market_data[0: self.num_assets * 3: 3]
+            price_rel = np.exp(log_ret_day)
+            price_rel_full = np.concatenate([price_rel, [1.0]])
+            portfolio_rel = np.dot(w, price_rel_full)
+            total_log_ret += float(np.log(portfolio_rel + 1e-8))
+            w = (w * price_rel_full) / (portfolio_rel + 1e-8)  # drift
+            self.current_step += 1
 
-        portfolio_relative = np.dot(w_target, price_rel_full)
-        port_ret = float(np.log(portfolio_relative + 1e-8))
-        turnover = float(np.abs(w_target - self.weights).sum())
+        self.weights = w
+        reward = total_log_ret - self.tc * turnover
 
-        reward = port_ret - self.tc * turnover
-
-        if self.debug and (self.current_step % self.debug_every == 0):
+        if self.debug and (len(self._debug_buf) % self.debug_every == 0):
             self._debug_buf.append({
-                "port_ret": port_ret,
+                "port_ret": total_log_ret,
                 "reward": reward,
                 "turnover": turnover
             })
 
-        # drift al cierre
-        self.weights = (w_target * price_rel_full) / (portfolio_relative + 1e-8)
-
-        # avanzar a dia t+1
-        self.current_step += 1
-        terminated = self.current_step >= len(self.data)
+        terminated = self.current_step >= self.episode_end
         obs = self._get_observation(step=self.current_step - 1)
-
         return obs, reward, terminated, False, {}
     
     def _action_to_weights(self, action):
@@ -110,13 +122,16 @@ class PortfolioEnv(gym.Env):
 
     def _get_observation(self, step=None):
         idx = self.current_step if step is None else step
-        market_data = self.data[idx]
+        # log-returns de los últimos window_size días (señal de tendencia/momentum)
+        start = idx - self.window_size + 1
+        logret_window = self.data[start: idx + 1, 0: self.num_assets * 3: 3].flatten()  # (window_size * num_assets,)
+        # features completas del día actual
+        current_day = self.data[idx]
         pred = np.zeros(self.ipm_dim, dtype=np.float32)
         if self.ipm_module is not None:
-            # Opcion A: usar las 18 features (sin VIX)
-            x_t = torch.tensor(market_data[: self.num_assets * 3], dtype=torch.float32)
+            x_t = torch.tensor(current_day[: self.num_assets * 3], dtype=torch.float32)
             pred = self.ipm_module.step(x_t).numpy()
-        obs = np.concatenate([market_data, pred, self.weights]).astype(np.float32)
+        obs = np.concatenate([logret_window, current_day, pred, self.weights]).astype(np.float32)
         return obs
 
     def _dsr(self, r: float) -> float:
