@@ -133,31 +133,7 @@ class PortfolioEnv(gym.Env):
             pred = self.ipm_module.step(x_t).numpy()
         obs = np.concatenate([logret_window, current_day, pred, self.weights]).astype(np.float32)
         return obs
-
-    def _dsr(self, r: float) -> float:
-        dA    = r - self._A
-        dB    = r ** 2 - self._B
-        var = max(self._B - self._A ** 2, 1e-4)  # o 1e-6
-        denom = var ** 0.5
-        dsr   = (self._B * dA - 0.5 * self._A * dB) / denom ** 3
-        self._A += self.eta * dA
-        self._B += self.eta * dB
-        return float(dsr)
-
-    def _calculate_reward(self, weights):
-        market_data = self.data[self.current_step]
-
-        log_returns = market_data[0: self.num_assets * 3: 3]
-        price_rel = np.exp(log_returns)
-        price_rel_full = np.concatenate([price_rel, [1.0]])
-
-        portfolio_relative = np.dot(weights, price_rel_full)
-        reward = np.log(portfolio_relative + 1e-8)
-
-        # pesos despues del movimiento del mercado (drift)
-        self.weights = (weights * price_rel_full) / (portfolio_relative + 1e-8)
-        return reward
-
+    
     def _plot_weights(self, weights, step, every=200):
         if step % every != 0:
             return

@@ -3,6 +3,9 @@ import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import random
+import torch
+
 
 from Environment.environment import PortfolioEnv
 from Environment.environment_IPM import PortfolioEnv as PortfolioEnvIPM
@@ -120,37 +123,28 @@ def evaluate_and_plot(model, env, freq=52, var_conf=0.95, out_path=None):
 
     return {"sharpe": sharpe, "sortino": sortino, "mdd": mdd, "var": var}
 
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 def main():
     data      = load_features(data_mode="Train", cache_dir="./data_cache")
     data_test = load_features(data_mode="Test",  cache_dir="./data_cache")
+    set_seed(0)
 
-    N_SEEDS = 3
-    best_sharpe = -np.inf
-    best_agent  = None
+    ipm = IPMModule(m=18)
+    env = PortfolioEnvIPM(data, ipm_module=ipm, debug=False, episode_weeks=52)
 
-    for seed in range(N_SEEDS):
-        print(f"\n=== Seed {seed} ===")
-        ipm = IPMModule(m=18)
-        env = PortfolioEnvIPM(data, ipm_module=ipm, debug=False, episode_weeks=52)
+    agent = PPOAgent(env, seed=0)
+    agent.train(total_timesteps=500_000)
 
-        agent = PPOAgent(env, seed=0)
-        agent.train(total_timesteps=500_000)
+    agent.save("ppo_portfolio")
 
-        ipm_test = IPMModule(m=18)
-        env_test = PortfolioEnvIPM(data_test, ipm_module=ipm_test, debug=False, episode_weeks=None)
-        metrics  = evaluate_and_plot(agent.model, env_test)
-        print(f"Seed {seed}: Sharpe={metrics['sharpe']:.3f}")
-
-        if metrics["sharpe"] > best_sharpe:
-            best_sharpe = metrics["sharpe"]
-            best_agent  = agent
-
-    print(f"\nMejor seed: Sharpe={best_sharpe:.3f}")
-    best_agent.save("ppo_portfolio")
-
-    ipm_final = IPMModule(m=18)
-    env_final  = PortfolioEnvIPM(data_test, ipm_module=ipm_final, debug=False, episode_weeks=None)
-    evaluate_and_plot(best_agent.model, env_final, out_path="eval_metrics.png")
+    env_final  = PortfolioEnvIPM(data_test, ipm_module=ipm, debug=False, episode_weeks=None)
+    evaluate_and_plot(agent.model, env_final, out_path="eval_metrics.png")
 
 if __name__ == "__main__":
     main()
