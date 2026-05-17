@@ -98,7 +98,7 @@ class PortfolioEnv(gym.Env):
             self.current_step += 1
 
         self.weights = w
-        reward = total_log_ret - self.tc * turnover
+        reward = 10 * total_log_ret - self.tc * turnover
 
         if self.debug and (len(self._debug_buf) % self.debug_every == 0):
             self._debug_buf.append({
