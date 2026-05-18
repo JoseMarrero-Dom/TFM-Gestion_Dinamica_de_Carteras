@@ -19,6 +19,7 @@ from dataLoader import portfolio_load_dataset
 
 def load_features(data_mode="Train", cache_dir="./data_cache"):
     dataset = portfolio_load_dataset(
+        split_date="2021-01-01",
         data_mode=data_mode,
         is_normalize=False,
         log_returns=True,
