@@ -16,6 +16,8 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import numpy as np
 
+from statsmodels.stats.diagnostic import acorr_ljungbox
+
    
 def visualization (ori_data, generated_data, analysis, save_name):
     """Using PCA or tSNE for generated and original data visualization.
@@ -97,3 +99,138 @@ def visualization (ori_data, generated_data, analysis, save_name):
         
     plt.savefig(f'./images/{save_name}.png', format="png")
     plt.show()
+
+def JarqueBera(ori_data, generated_data):
+    """Prueba de normalidad Jarque-Bera comparando datos originales y generados.
+
+    Compara los p-values de la prueba JB aplicada a cada dimensión,
+    promediando sobre todas las features y muestras.
+
+    Args:
+        ori_data:       datos originales,   shape (N, seq_len, dim)
+        generated_data: datos sintéticos,   shape (N, seq_len, dim)
+
+    Returns:
+        jb_ori_mean:  media de p-values JB sobre datos originales
+        jb_gen_mean:  media de p-values JB sobre datos generados
+        jb_diff:      diferencia absoluta entre ambas medias
+    """
+    from scipy import stats
+
+    ori_data = np.asarray(ori_data)
+    generated_data = np.asarray(generated_data)
+
+    anal_sample_no = min(1000, len(ori_data))
+    idx = np.random.permutation(len(ori_data))[:anal_sample_no]
+    ori_data = ori_data[idx]
+    generated_data = generated_data[idx]
+
+    no, seq_len, dim = ori_data.shape
+
+    jb_ori_pvalues = []
+    jb_gen_pvalues = []
+
+    for d in range(dim):
+        # Aplanar la dimensión d sobre todas las muestras y pasos de tiempo
+        ori_flat = ori_data[:, :, d].flatten()
+        gen_flat = generated_data[:, :, d].flatten()
+
+        _, p_ori = stats.jarque_bera(ori_flat)
+        _, p_gen = stats.jarque_bera(gen_flat)
+
+        jb_ori_pvalues.append(p_ori)
+        jb_gen_pvalues.append(p_gen)
+
+    jb_ori_mean = np.mean(jb_ori_pvalues)
+    jb_gen_mean = np.mean(jb_gen_pvalues)
+    jb_diff     = np.abs(jb_ori_mean - jb_gen_mean)
+
+    return jb_ori_mean, jb_gen_mean, jb_diff
+
+
+def LjungBox(ori_data, generated_data, lags=10):
+    """Prueba de autocorrelación Ljung-Box comparando datos originales y generados.
+
+    Evalúa si las series temporales presentan autocorrelación significativa.
+    Un buen modelo generativo debería reproducir la estructura de autocorrelación
+    del proceso original.
+
+    Args:
+        ori_data:       datos originales,   shape (N, seq_len, dim)
+        generated_data: datos sintéticos,   shape (N, seq_len, dim)
+        lags:           número de retardos a evaluar (default: 10)
+
+    Returns:
+        lb_ori_mean:  media de p-values LB sobre datos originales
+        lb_gen_mean:  media de p-values LB sobre datos generados
+        lb_diff:      diferencia absoluta entre ambas medias
+    """
+
+    ori_data = np.asarray(ori_data)
+    generated_data = np.asarray(generated_data)
+
+    anal_sample_no = min(1000, len(ori_data))
+    idx = np.random.permutation(len(ori_data))[:anal_sample_no]
+    ori_data = ori_data[idx]
+    generated_data = generated_data[idx]
+
+    no, seq_len, dim = ori_data.shape
+
+    lb_ori_pvalues = []
+    lb_gen_pvalues = []
+
+    effective_lags = min(lags, seq_len - 1)
+
+    for i in range(no):
+        for d in range(dim):
+            ori_series = ori_data[i, :, d]
+            gen_series = generated_data[i, :, d]
+
+            lb_ori = acorr_ljungbox(ori_series, lags=[effective_lags], return_df=True)
+            lb_gen = acorr_ljungbox(gen_series, lags=[effective_lags], return_df=True)
+
+            lb_ori_pvalues.append(lb_ori['lb_pvalue'].values[-1])
+            lb_gen_pvalues.append(lb_gen['lb_pvalue'].values[-1])
+
+    lb_ori_mean = np.mean(lb_ori_pvalues)
+    lb_gen_mean = np.mean(lb_gen_pvalues)
+    lb_diff     = np.abs(lb_ori_mean - lb_gen_mean)
+
+    return lb_ori_mean, lb_gen_mean, lb_diff
+
+
+def FrobeniusDistance(ori_data, generated_data):
+    """Distancia de Frobenius entre las matrices de covarianza de los datos
+    originales y generados.
+
+    Mide qué tan bien el modelo generativo reproduce la estructura de
+    covarianza (correlaciones lineales entre features) del proceso real.
+
+    Args:
+        ori_data:       datos originales,   shape (N, seq_len, dim)
+        generated_data: datos sintéticos,   shape (N, seq_len, dim)
+
+    Returns:
+        frob_dist: distancia de Frobenius entre matrices de covarianza
+    """
+    ori_data = np.asarray(ori_data)
+    generated_data = np.asarray(generated_data)
+
+    anal_sample_no = min(1000, len(ori_data))
+    idx = np.random.permutation(len(ori_data))[:anal_sample_no]
+    ori_data = ori_data[idx]
+    generated_data = generated_data[idx]
+
+    no, seq_len, dim = ori_data.shape
+
+    # Aplanar a (N*seq_len, dim) para calcular la covarianza global
+    ori_flat = ori_data.reshape(-1, dim)
+    gen_flat = generated_data.reshape(-1, dim)
+
+    cov_ori = np.cov(ori_flat, rowvar=False)   # (dim, dim)
+    cov_gen = np.cov(gen_flat, rowvar=False)   # (dim, dim)
+
+    diff = cov_ori - cov_gen
+    frob_dist = np.linalg.norm(diff, ord='fro')
+
+    return frob_dist

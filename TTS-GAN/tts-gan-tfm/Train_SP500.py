@@ -16,7 +16,7 @@ os.system(f"CUDA_VISIBLE_DEVICES=0 python train_GAN.py \
 -gen_bs 64 \
 -dis_bs 64 \
 --dataset portfolio \
---asset SP500 \
+--asset UST10Y \
 --stride 1 \
 --normalize_mode zscore \
 --log_returns True \
@@ -58,5 +58,5 @@ os.system(f"CUDA_VISIBLE_DEVICES=0 python train_GAN.py \
 --ema_warmup 0.1 \
 --ema 0.9999 \
 --diff_aug translation,cutout,color \
---class_name SP500 \
---exp_name SP500")
+--class_name UST10Y \
+--exp_name UST10Y")

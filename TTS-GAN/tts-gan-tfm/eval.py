@@ -4,7 +4,7 @@ import torch
 
 from GANModels import Generator
 from dataLoader import portfolio_load_dataset
-from visualizationMetrics import visualization
+from visualizationMetrics import visualization, JarqueBera, LjungBox, FrobeniusDistance
 
 # 1) Cargar checkpoint (el mas reciente de logs/)
 logs_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -26,7 +26,7 @@ gen.eval()
 # 3) Datos reales (test o train)
 real_set = portfolio_load_dataset(
     data_mode="Test",  # o "Train"
-    assets=["SP500"],
+    assets=["UST10Y"],
     window_length=150,
     stride=1,
     train_ratio=0.8,
@@ -49,5 +49,17 @@ fake = np.transpose(fake.squeeze(2), (0, 2, 1))        # (N, T, C)
 
 # 5) Visualizacion (PCA o tSNE)
 os.makedirs("images", exist_ok=True)
-visualization(real, fake, analysis="pca", save_name="sp500_pca")
-visualization(real, fake, analysis="tsne", save_name="sp500_tsne")
+visualization(real, fake, analysis="pca", save_name="ust10y_pca")
+visualization(real, fake, analysis="tsne", save_name="ust10y_tsne")
+
+# 6) Jarque-Bera
+jb_ori_mean, jb_gen_mean, jb_diff = JarqueBera(real, fake)
+print(f"Jarque-Bera - Original: {jb_ori_mean}, Generated: {jb_gen_mean}, Difference: {jb_diff}")
+
+# 7) Ljung-Box
+lb_ori_mean, lb_gen_mean, lb_diff = LjungBox(real, fake)
+print(f"Ljung-Box - Original: {lb_ori_mean}, Generated: {lb_gen_mean}, Difference: {lb_diff}")
+
+# 8) Frobenius Distance
+frob_dist = FrobeniusDistance(real, fake)
+print(f"Frobenius Distance: {frob_dist}")
