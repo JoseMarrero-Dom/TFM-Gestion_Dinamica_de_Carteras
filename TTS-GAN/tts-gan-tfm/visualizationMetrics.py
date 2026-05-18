@@ -186,8 +186,8 @@ def LjungBox(ori_data, generated_data, lags=10):
             ori_series = ori_data[i, :, d]
             gen_series = generated_data[i, :, d]
 
-            lb_ori = acorr_ljungbox(ori_series, lags=[effective_lags], return_df=True)
-            lb_gen = acorr_ljungbox(gen_series, lags=[effective_lags], return_df=True)
+            lb_ori = acorr_ljungbox(ori_series ** 2, lags=[effective_lags], return_df=True)
+            lb_gen = acorr_ljungbox(gen_series ** 2, lags=[effective_lags], return_df=True)
 
             lb_ori_pvalues.append(lb_ori['lb_pvalue'].values[-1])
             lb_gen_pvalues.append(lb_gen['lb_pvalue'].values[-1])
@@ -223,14 +223,13 @@ def FrobeniusDistance(ori_data, generated_data):
 
     no, seq_len, dim = ori_data.shape
 
-    # Aplanar a (N*seq_len, dim) para calcular la covarianza global
     ori_flat = ori_data.reshape(-1, dim)
     gen_flat = generated_data.reshape(-1, dim)
 
-    cov_ori = np.cov(ori_flat, rowvar=False)   # (dim, dim)
-    cov_gen = np.cov(gen_flat, rowvar=False)   # (dim, dim)
+    corr_ori = np.corrcoef(ori_flat, rowvar=False)   # (dim, dim)
+    corr_gen = np.corrcoef(gen_flat, rowvar=False)   # (dim, dim)
 
-    diff = cov_ori - cov_gen
+    diff = corr_ori - corr_gen
     frob_dist = np.linalg.norm(diff, ord='fro')
 
     return frob_dist
