@@ -206,7 +206,7 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     agent.train(total_timesteps=timesteps_real)
     agent.save(os.path.join(out_dir, "ppo_baseline"))
 
-    env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=52, reward_scale=100)
+    env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=None, reward_scale=100)
     metrics_base = evaluate_and_plot(
         agent.model, env_test,
         out_path=os.path.join(out_dir, "eval_baseline.png")
