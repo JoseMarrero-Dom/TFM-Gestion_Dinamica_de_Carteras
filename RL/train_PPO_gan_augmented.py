@@ -251,10 +251,10 @@ def evaluate_and_plot(model, env, freq=52, var_conf=0.95, out_path=None):
         action, _ = model.predict(obs, deterministic=True)
         w = _action_to_weights(action)
         weights_hist.append(w.copy())
-        obs, reward, terminated, truncated, _ = env.step(action)
-        # reconstruir log-ret del portfolio desde reward (reward = log_ret - tc*turnover)
-        log_returns.append(float(reward))
-        equity.append(equity[-1] * np.exp(float(reward)))
+        obs, _, terminated, truncated, info = env.step(action)
+        port_ret = float(info["portfolio_log_ret"])
+        log_returns.append(port_ret)
+        equity.append(equity[-1] * np.exp(port_ret))
         done = terminated or truncated
 
     lr  = np.asarray(log_returns)
