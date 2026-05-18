@@ -127,25 +127,31 @@ def JarqueBera(ori_data, generated_data):
 
     no, seq_len, dim = ori_data.shape
 
+    jb_ori_stats  = []
+    jb_gen_stats  = []
     jb_ori_pvalues = []
     jb_gen_pvalues = []
 
     for d in range(dim):
-        # Aplanar la dimensión d sobre todas las muestras y pasos de tiempo
         ori_flat = ori_data[:, :, d].flatten()
         gen_flat = generated_data[:, :, d].flatten()
 
-        _, p_ori = stats.jarque_bera(ori_flat)
-        _, p_gen = stats.jarque_bera(gen_flat)
+        stat_ori, p_ori = stats.jarque_bera(ori_flat)
+        stat_gen, p_gen = stats.jarque_bera(gen_flat)
 
+        jb_ori_stats.append(stat_ori)
+        jb_gen_stats.append(stat_gen)
         jb_ori_pvalues.append(p_ori)
         jb_gen_pvalues.append(p_gen)
 
-    jb_ori_mean = np.mean(jb_ori_pvalues)
-    jb_gen_mean = np.mean(jb_gen_pvalues)
-    jb_diff     = np.abs(jb_ori_mean - jb_gen_mean)
+    jb_ori_stat  = np.mean(jb_ori_stats)
+    jb_gen_stat  = np.mean(jb_gen_stats)
+    jb_ori_pval  = np.mean(jb_ori_pvalues)
+    jb_gen_pval  = np.mean(jb_gen_pvalues)
+    jb_stat_diff = np.abs(jb_ori_stat - jb_gen_stat)
+    jb_pval_diff = np.abs(jb_ori_pval  - jb_gen_pval)
 
-    return jb_ori_mean, jb_gen_mean, jb_diff
+    return jb_ori_stat, jb_gen_stat, jb_stat_diff, jb_ori_pval, jb_gen_pval, jb_pval_diff
 
 
 def LjungBox(ori_data, generated_data, lags=10):
