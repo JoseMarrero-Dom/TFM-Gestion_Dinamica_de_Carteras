@@ -123,8 +123,19 @@ def eval_run(run_dir):
     }
     os.makedirs("images", exist_ok=True)
     safe_name = run_name.replace(":", "-")
-    plot_asset_dashboard(real, fake, metrics, asset if asset else "portfolio",
-                         f"images/{safe_name}_dashboard.png")
+
+    if channels == 18:
+        # Un dashboard por activo (3 canales cada uno: logret, oc_range, hl_range)
+        for i, aname in enumerate(ALL_ASSET_NAMES):
+            c0, c1 = i * 3, i * 3 + 3
+            plot_asset_dashboard(
+                real[:, :, c0:c1], fake[:, :, c0:c1],
+                metrics, aname,
+                f"images/{safe_name}_{aname}_dashboard.png",
+            )
+    else:
+        plot_asset_dashboard(real, fake, metrics, asset if asset else "portfolio",
+                             f"images/{safe_name}_dashboard.png")
 
     # Criterios de aceptacion (Tabla 6.8 TFM)
     jb_pass   = jb_gen_pval < 0.05   # rechaza normalidad

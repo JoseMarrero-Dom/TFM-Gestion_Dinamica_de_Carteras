@@ -118,9 +118,14 @@ def compute_channel_stats(real_flat):
     return market.mean(axis=0), market.std(axis=0) + 1e-8
 
 
-def denormalize(windows_norm, mean, std):
-    """Convierte ventanas z-score → escala de retornos reales."""
-    return windows_norm * std + mean
+def denormalize(windows_norm, mean, std, clip_sigma=4.0):
+    """Convierte ventanas z-score → escala de retornos reales.
+    Recorta a ±clip_sigma desviaciones para evitar overflow en np.exp().
+    """
+    out = windows_norm * std + mean
+    lo  = mean - clip_sigma * std
+    hi  = mean + clip_sigma * std
+    return np.clip(out, lo, hi)
 
 
 # ── construcción del dataset aumentado ────────────────────────────────────────
@@ -140,13 +145,14 @@ def build_augmented_data(real_flat, synthetic_blocks):
     return np.concatenate(parts, axis=0).astype(np.float32)
 
 
-def windows_to_flat(windows_denorm, vix_value=VIX_STRESS):
+def windows_to_flat(windows_denorm, vix_value=VIX_STRESS, log_ret_clip=0.30):
     """
     Convierte ventanas (N, T, C) en array plano (N*T, C+1) añadiendo VIX.
     Se usa para modelos multi-activo (C=18).
+    Recorta log-returns a ±log_ret_clip para evitar overflow en np.exp().
     """
     N, T, C = windows_denorm.shape
-    flat = windows_denorm.reshape(-1, C)
+    flat = np.clip(windows_denorm.reshape(-1, C), -log_ret_clip, log_ret_clip)
     vix_col = np.full((N * T, 1), vix_value, dtype=np.float32)
     return np.concatenate([flat, vix_col], axis=1)
 
@@ -331,7 +337,8 @@ def main():
                 stress_real[:n_use], gen_windows[:n_use], asset, mean, std
             )
             vix_col    = np.full((n_use * seq_len, 1), VIX_STRESS, dtype=np.float32)
-            synth_flat = np.concatenate([augmented_windows.reshape(-1, 18), vix_col], axis=1)
+            market_flat = np.clip(augmented_windows.reshape(-1, 18), -0.30, 0.30)
+            synth_flat = np.concatenate([market_flat, vix_col], axis=1)
 
         else:
             print(f"  channels={channels} no soportado, saltando.")
