@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from IPM.ipm import IPMModule
 
 class PortfolioEnv(gym.Env):
-    def __init__(self, data, transaction_cost: float = 0.001, ipm_module=None, debug=False, debug_every=200, window_size=5, rebalance_freq=5, episode_weeks=52):
+    def __init__(self, data, transaction_cost: float = 0.001, ipm_module=None, debug=False, debug_every=200, window_size=5, rebalance_freq=5, episode_weeks=52, reward_scale=1.0):
         super(PortfolioEnv, self).__init__()
         self.data = data
         self.tc   = transaction_cost
@@ -31,6 +31,7 @@ class PortfolioEnv(gym.Env):
         self.debug = debug
         self.debug_every = debug_every
         self._debug_buf = []
+        self.reward_scale = reward_scale
         self.current_step = 0
         self.num_assets = 6  # 6 assets + cash
         self.window_size = window_size
@@ -98,7 +99,7 @@ class PortfolioEnv(gym.Env):
             self.current_step += 1
 
         self.weights = w
-        reward = 10 * total_log_ret - self.tc * turnover
+        reward = self.reward_scale * total_log_ret - self.tc * turnover
 
         if self.debug and (len(self._debug_buf) % self.debug_every == 0):
             self._debug_buf.append({
@@ -109,7 +110,7 @@ class PortfolioEnv(gym.Env):
 
         terminated = self.current_step >= self.episode_end
         obs = self._get_observation(step=self.current_step - 1)
-        return obs, reward, terminated, False, {}
+        return obs, reward, terminated, False, {"portfolio_log_ret": total_log_ret}
     
     def _action_to_weights(self, action):
         x = np.maximum(action, 0.0)   # ReLU: negativos → 0 exacto

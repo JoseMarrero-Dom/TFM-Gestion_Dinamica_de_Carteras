@@ -56,9 +56,10 @@ def evaluate_and_plot(model, env, freq=52, var_conf=0.95, out_path=None):
         action, _ = model.predict(obs, deterministic=True)
         weights_hist.append(action_to_weights(action).copy())
 
-        obs, reward, terminated, truncated, _ = env.step(action)
-        log_returns.append(float(reward))
-        equity.append(equity[-1] * np.exp(float(reward)))
+        obs, _, terminated, truncated, info = env.step(action)
+        port_ret = float(info["portfolio_log_ret"])
+        log_returns.append(port_ret)
+        equity.append(equity[-1] * np.exp(port_ret))
         done = terminated or truncated
 
     log_returns  = np.asarray(log_returns)
@@ -136,7 +137,7 @@ def main():
     set_seed(0)
 
     ipm = IPMModule(m=18)
-    env = PortfolioEnvIPM(data, ipm_module=ipm, debug=False, episode_weeks=52)
+    env = PortfolioEnvIPM(data, ipm_module=ipm, debug=False, episode_weeks=52, reward_scale=100)
 
     agent = PPOAgent(env, seed=0)
     agent.train(total_timesteps=500_000)

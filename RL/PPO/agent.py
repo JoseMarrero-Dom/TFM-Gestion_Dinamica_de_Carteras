@@ -26,7 +26,7 @@ class ETACallback(BaseCallback):
 
 
 class PPOAgent:
-    def __init__(self, env, seed=0):
+    def __init__(self, env, seed=None):
         self.env = env
         self.model = PPO(
             'MlpPolicy', env, seed=seed, verbose=1, device='cpu',
