@@ -20,18 +20,23 @@ def infer_config_from_state_dict(state_dict):
     return channels, latent_dim, seq_len
 
 
-def detect_asset_from_name(run_name, channels):
-    """Intenta detectar el activo desde el nombre del run."""
+def detect_assets_from_name(run_name, channels):
+    """Devuelve lista de activos inferida del nombre del run y los canales.
+
+    - channels == 18 y 'portfolio' en el nombre → todos los activos
+    - channels == 18 en cualquier caso → todos los activos (modelo conjunto)
+    - channels == 3  → un solo activo; lo busca en el nombre o asume UST10Y
+    - channels == 1  → idem sin intraday
+    """
+    if channels == 18:
+        return None   # None = todos los activos en dataLoader
+
+    # modelo mono-activo
     name_upper = run_name.upper()
     for asset in ALL_ASSET_NAMES:
         if asset.upper() in name_upper:
-            return asset
-    # Si hay 1 activo (3 canales con intraday) y no se detecta, asumir UST10Y
-    if channels == 3:
-        return "UST10Y"
-    if channels == 1:
-        return "UST10Y"
-    return None  # multiples activos
+            return [asset]
+    return ["UST10Y"]  # fallback
 
 
 def load_real_data(asset, channels, seq_len, n_samples=1000, filter_regime=["moderate", "stress"]):
@@ -77,9 +82,10 @@ def eval_run(run_dir):
     state_dict = ckpt["avg_gen_state_dict"]
 
     channels, latent_dim, seq_len = infer_config_from_state_dict(state_dict)
-    asset = detect_asset_from_name(run_name, channels)
+    assets = detect_assets_from_name(run_name, channels)
+    asset  = assets[0] if assets and len(assets) == 1 else None
     print(f"Config inferida → channels={channels}, latent_dim={latent_dim}, seq_len={seq_len}")
-    print(f"Activo detectado → {asset if asset else 'todos'}")
+    print(f"Activos detectados → {assets if assets else 'todos'}")
 
     gen = Generator(seq_len=seq_len, patch_size=15, channels=channels, latent_dim=latent_dim)
     gen.load_state_dict(state_dict)

@@ -172,10 +172,11 @@ def parse_args():
         default='./data',
         help='The path of data set')
     parser.add_argument(
-        '--asset',
+        '--assets',
+        nargs='+',
         type=str,
         default=None,
-        help='Single asset key to train on (e.g., SP500).')
+        help='Lista de activos a entrenar (e.g., SP500 UST10Y). Sin valor = todos.')
     parser.add_argument(
         '--window_length',
         type=int,

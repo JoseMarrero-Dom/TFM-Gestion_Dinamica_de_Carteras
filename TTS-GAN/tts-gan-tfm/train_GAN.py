@@ -119,8 +119,8 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # dataset-driven model config
     if args.dataset.lower() == "portfolio":
-        asset_list = [args.asset] if args.asset else None
-        n_assets = 1 if asset_list else len(dl.DEFAULT_TICKERS)
+        asset_list = args.assets if args.assets else None
+        n_assets = len(asset_list) if asset_list else len(dl.DEFAULT_TICKERS)
         channels_per_asset = 3 if getattr(args, 'use_intraday', False) else 1
         args.channels = n_assets * channels_per_asset
         seq_len = args.window_length
@@ -218,7 +218,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.dataset.lower() == "portfolio":
         train_set = dl.portfolio_load_dataset(
             data_mode="Train",
-            assets=asset_list,
+            assets=asset_list,  # None = todos los activos
             window_length=args.window_length,
             stride=args.stride,
             train_ratio=args.train_ratio,
