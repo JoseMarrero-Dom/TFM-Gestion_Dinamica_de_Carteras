@@ -25,8 +25,9 @@ sys.path.insert(0, GAN_DIR)
 from GANModels import Generator
 from dataLoader import portfolio_load_dataset, DEFAULT_TICKERS
 
-from Environment.environment import PortfolioEnv
+from Environment.environment_IPM import PortfolioEnv
 from PPO.agent import PPOAgent
+from IPM.ipm import IPMModule
 
 # ── constantes ────────────────────────────────────────────────────────────────
 ALL_ASSETS  = list(DEFAULT_TICKERS.keys())   # orden fijo del dataLoader
@@ -180,7 +181,7 @@ def inject_single_asset(stress_windows_real, gen_windows_norm, asset_name, mean,
 
 # ── entrenamiento PPO ──────────────────────────────────────────────────────────
 
-def train_and_eval(real_data, test_data, out_dir,
+def train_and_eval(real_data, test_data, ipm, out_dir,
                    synthetic_data=None,
                    timesteps_real=300_000,
                    timesteps_finetune=150_000):
@@ -194,12 +195,12 @@ def train_and_eval(real_data, test_data, out_dir,
     # ── Fase 1: solo real ──────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"Fase 1 — entrenando PPO con datos reales ({len(real_data)} pasos)")
-    env_real  = PortfolioEnv(real_data)
+    env_real  = PortfolioEnv(real_data, ipm_module=ipm, episode_weeks=52, reward_scale=100)
     agent     = PPOAgent(env_real, seed=42)
     agent.train(total_timesteps=timesteps_real)
     agent.save(os.path.join(out_dir, "ppo_baseline"))
 
-    env_test = PortfolioEnv(test_data)
+    env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=52, reward_scale=100)
     metrics_base = evaluate_and_plot(
         agent.model, env_test,
         out_path=os.path.join(out_dir, "eval_baseline.png")
@@ -217,7 +218,7 @@ def train_and_eval(real_data, test_data, out_dir,
     print(f"\nFase 2 — fine-tune con reales + sintéticos")
     print(f"  {len(real_data)} reales + {n_synth} sintéticos = {len(augmented)} total")
 
-    env_aug = PortfolioEnv(augmented)
+    env_aug = PortfolioEnv(augmented, ipm_module=ipm, episode_weeks=52, reward_scale=100)
     agent.model.set_env(env_aug)
     agent.train(total_timesteps=timesteps_finetune)
     agent.save(os.path.join(out_dir, "ppo_augmented"))
@@ -297,6 +298,7 @@ def main():
     runs = sorted(
         d for d in os.listdir(LOGS_DIR)
         if os.path.isdir(os.path.join(LOGS_DIR, d))
+        and d.startswith("portfolio")
     )
     checkpoints = [
         (run, os.path.join(LOGS_DIR, run, "Model", "checkpoint"))
@@ -345,6 +347,7 @@ def main():
     results = train_and_eval(
         real_data=real_train,
         test_data=real_test,
+        ipm=IPMModule(m=18),
         out_dir=out_dir,
         synthetic_data=all_synthetic,
     )
