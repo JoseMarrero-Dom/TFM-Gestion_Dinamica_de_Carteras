@@ -4,7 +4,7 @@ import torch
 
 from GANModels import Generator
 from dataLoader import portfolio_load_dataset, DEFAULT_TICKERS
-from visualizationMetrics import visualization, JarqueBera, LjungBox, FrobeniusDistance
+from visualizationMetrics import JarqueBera, LjungBox, FrobeniusDistance, plot_asset_dashboard
 
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
@@ -34,7 +34,7 @@ def detect_asset_from_name(run_name, channels):
     return None  # multiples activos
 
 
-def load_real_data(asset, channels, seq_len, n_samples=1000, filter_regime=None):
+def load_real_data(asset, channels, seq_len, n_samples=1000, filter_regime=["moderate", "stress"]):
     """Carga datos reales del activo correspondiente al modelo."""
     use_intraday = (channels % 3 == 0) and (channels // 3 <= len(ALL_ASSET_NAMES))
     n_assets_model = channels // 3 if use_intraday else channels
@@ -85,48 +85,40 @@ def eval_run(run_dir):
     gen.load_state_dict(state_dict)
     gen.eval()
 
-    # Datos filtrados por regimen: para visualizacion PCA/tSNE (mismo dominio de entrenamiento)
     try:
-        real_regime = load_real_data(asset, channels, seq_len, filter_regime=["moderate", "stress"])
+        real = load_real_data(asset, channels, seq_len, filter_regime=["moderate", "stress"])
     except Exception as e:
-        print(f"Error cargando datos reales (regime): {e}")
+        print(f"Error cargando datos reales: {e}")
         return None
 
-    # Datos sin filtro: para JB, LB² y Frobenius (el GAN debe generalizar, no solo stress)
-    try:
-        real_all = load_real_data(asset, channels, seq_len, filter_regime=None)
-    except Exception as e:
-        print(f"Error cargando datos reales (all): {e}")
-        return None
-
-    N_vis = len(real_regime)
-    N_stat = len(real_all)
-
-    z_vis = torch.randn(N_vis, latent_dim)
-    z_stat = torch.randn(N_stat, latent_dim)
+    N = len(real)
+    z = torch.randn(N, latent_dim)
     with torch.no_grad():
-        fake_vis  = gen(z_vis).cpu().numpy()
-        fake_stat = gen(z_stat).cpu().numpy()
+        fake = gen(z).cpu().numpy()
+    fake = np.transpose(fake.squeeze(2), (0, 2, 1))
 
-    fake_vis  = np.transpose(fake_vis.squeeze(2),  (0, 2, 1))
-    fake_stat = np.transpose(fake_stat.squeeze(2), (0, 2, 1))
+    print(f"Datos moderate+stress → reales: {real.shape} | generados: {fake.shape}")
 
-    print(f"Datos régimen (visualización): {real_regime.shape} | generados: {fake_vis.shape}")
-    print(f"Datos completos (tests): {real_all.shape} | generados: {fake_stat.shape}")
+    jb_ori_stat, jb_gen_stat, jb_stat_diff, jb_ori_pval, jb_gen_pval, jb_pval_diff = JarqueBera(real, fake)
+    lb_ori, lb_gen, lb_diff = LjungBox(real, fake)
+    frob = FrobeniusDistance(real, fake)
 
-    os.makedirs("images", exist_ok=True)
-    safe_name = run_name.replace(":", "-")
-    visualization(real_regime, fake_vis, analysis="pca",  save_name=f"{safe_name}_pca")
-    visualization(real_regime, fake_vis, analysis="tsne", save_name=f"{safe_name}_tsne")
-
-    jb_ori_stat, jb_gen_stat, jb_stat_diff, jb_ori_pval, jb_gen_pval, jb_pval_diff = JarqueBera(real_all, fake_stat)
-    lb_ori, lb_gen, lb_diff = LjungBox(real_all, fake_stat)
-    frob = FrobeniusDistance(real_all, fake_stat)
-
-    print(f"Jarque-Bera estadístico → Original: {jb_ori_stat:.2f} | Generado: {jb_gen_stat:.2f} | Diferencia: {jb_stat_diff:.2f}")
+    jb_ratio = jb_gen_stat / jb_ori_stat if jb_ori_stat > 0 else float("inf")
+    print(f"Jarque-Bera estadístico → Original: {jb_ori_stat:.2f} | Generado: {jb_gen_stat:.2f} | Ratio: {jb_ratio:.2f}x")
     print(f"Jarque-Bera p-valor     → Original: {jb_ori_pval:.2e} | Generado: {jb_gen_pval:.2e}")
     print(f"Ljung-Box²  p-valor     → Original: {lb_ori:.6f} | Generado: {lb_gen:.6f} | Diferencia: {lb_diff:.6f}")
     print(f"Frobenius               → {frob:.6f}")
+
+    metrics = {
+        "jb_ori_stat": jb_ori_stat, "jb_gen_stat": jb_gen_stat, "jb_ratio": jb_ratio,
+        "jb_ori_pval": jb_ori_pval, "jb_gen_pval": jb_gen_pval,
+        "lb_ori": lb_ori, "lb_gen": lb_gen, "lb_diff": lb_diff,
+        "frob": frob,
+    }
+    os.makedirs("images", exist_ok=True)
+    safe_name = run_name.replace(":", "-")
+    plot_asset_dashboard(real, fake, metrics, asset if asset else "portfolio",
+                         f"images/{safe_name}_dashboard.png")
 
     # Criterios de aceptacion (Tabla 6.8 TFM)
     jb_pass   = jb_gen_pval < 0.05   # rechaza normalidad
@@ -140,10 +132,7 @@ def eval_run(run_dir):
         "run": run_name,
         "channels": channels,
         "asset": asset if asset else "todos",
-        "jb_ori_stat": jb_ori_stat, "jb_gen_stat": jb_gen_stat,
-        "jb_ori_pval": jb_ori_pval, "jb_gen_pval": jb_gen_pval,
-        "lb_ori": lb_ori, "lb_gen": lb_gen,
-        "frob": frob,
+        **metrics,
         "jb_pass": jb_pass, "lb_pass": lb_pass, "frob_pass": frob_pass,
     }
 
@@ -169,13 +158,13 @@ def main():
     print(f"\n{'='*60}")
     print("RESUMEN FINAL")
     print(f"{'='*60}")
-    header = f"{'Run':<35} {'Ch':>3} {'Activo':<10} {'JB_stat':>10} {'JB_pval':>9} {'LB²_pval':>9} {'Frob':>8}  Criterios"
+    header = f"{'Run':<35} {'Ch':>3} {'Activo':<10} {'JB_ratio':>9} {'JB_pval':>9} {'LB²_pval':>9} {'Frob':>8}  Criterios"
     print(header)
     print("-" * len(header))
     for r in resultados:
         criterios = f"JB={'OK' if r['jb_pass'] else 'X'} LB={'OK' if r['lb_pass'] else 'X'} Fr={'OK' if r['frob_pass'] else 'X'}"
         print(f"{r['run']:<35} {r['channels']:>3} {r['asset']:<10} "
-              f"{r['jb_gen_stat']:>10.1f} {r['jb_gen_pval']:>9.2e} {r['lb_gen']:>9.4f} {r['frob']:>8.4f}  {criterios}")
+              f"{r['jb_ratio']:>8.2f}x {r['jb_gen_pval']:>9.2e} {r['lb_gen']:>9.4f} {r['frob']:>8.4f}  {criterios}")
 
 
 if __name__ == "__main__":
