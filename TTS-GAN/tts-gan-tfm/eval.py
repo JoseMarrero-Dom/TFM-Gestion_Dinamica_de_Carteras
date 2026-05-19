@@ -156,7 +156,7 @@ def eval_run(run_dir):
 
 def main():
     runs = sorted(
-        [d for d in os.listdir(LOGS_DIR) if os.path.isdir(os.path.join(LOGS_DIR, d))]
+        [d for d in os.listdir(LOGS_DIR) if os.path.isdir(os.path.join(LOGS_DIR, d)) and d.startswith("portfolio")]
     )
     if not runs:
         raise FileNotFoundError(f"No hay experimentos en {LOGS_DIR}")

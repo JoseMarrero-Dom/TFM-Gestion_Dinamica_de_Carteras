@@ -189,8 +189,8 @@ def inject_single_asset(stress_windows_real, gen_windows_norm, asset_name, mean,
 
 def train_and_eval(real_data, test_data, ipm, out_dir,
                    synthetic_data=None,
-                   timesteps_real=300_000,
-                   timesteps_finetune=150_000):
+                   timesteps_real=200_000,
+                   timesteps_finetune=4_000_000):
     """
     Fase 1: entrena PPO solo con datos reales.
     Fase 2: si hay sintéticos, continúa entrenando con reales + sintéticos
@@ -201,12 +201,12 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     # ── Fase 1: solo real ──────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"Fase 1 — entrenando PPO con datos reales ({len(real_data)} pasos)")
-    env_real  = PortfolioEnv(real_data, ipm_module=ipm, episode_weeks=52, reward_scale=100)
-    agent     = PPOAgent(env_real, seed=42)
+    env_real  = PortfolioEnv(real_data, ipm_module=ipm, episode_weeks=52, reward_scale=50)
+    agent     = PPOAgent(env_real, seed=0)
     agent.train(total_timesteps=timesteps_real)
     agent.save(os.path.join(out_dir, "ppo_baseline"))
 
-    env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=None, reward_scale=100)
+    env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=None)
     metrics_base = evaluate_and_plot(
         agent.model, env_test,
         out_path=os.path.join(out_dir, "eval_baseline.png")
@@ -224,7 +224,7 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     print(f"\nFase 2 — fine-tune con reales + sintéticos")
     print(f"  {len(real_data)} reales + {n_synth} sintéticos = {len(augmented)} total")
 
-    env_aug = PortfolioEnv(augmented, ipm_module=ipm, episode_weeks=52, reward_scale=100)
+    env_aug = PortfolioEnv(augmented, ipm_module=ipm, episode_weeks=52, reward_scale=50)
     agent.model.set_env(env_aug)
     agent.train(total_timesteps=timesteps_finetune)
     agent.save(os.path.join(out_dir, "ppo_augmented"))
@@ -304,7 +304,7 @@ def main():
     runs = sorted(
         d for d in os.listdir(LOGS_DIR)
         if os.path.isdir(os.path.join(LOGS_DIR, d))
-        and d.startswith("portfolio")
+        and not d.startswith("portfolio")
     )
     checkpoints = [
         (run, os.path.join(LOGS_DIR, run, "Model", "checkpoint"))
