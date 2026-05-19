@@ -189,8 +189,8 @@ def inject_single_asset(stress_windows_real, gen_windows_norm, asset_name, mean,
 
 def train_and_eval(real_data, test_data, ipm, out_dir,
                    synthetic_data=None,
-                   timesteps_real=200_000,
-                   timesteps_finetune=4_000_000):
+                   timesteps_real=2_000_000,
+                   timesteps_finetune=0):
     """
     Fase 1: entrena PPO solo con datos reales.
     Fase 2: si hay sintéticos, continúa entrenando con reales + sintéticos
