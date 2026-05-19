@@ -376,3 +376,86 @@ def plot_asset_dashboard(ori_data, generated_data, metrics, asset_name, save_pat
     plt.savefig(save_path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     print(f"Dashboard guardado → {save_path}")
+
+
+def MomentsComparison(ori_data, generated_data):
+    """Compara media, std, skewness y kurtosis entre datos reales y sinteticos.
+
+    Aplana todas las muestras y canales y calcula los cuatro momentos.
+    El error relativo indica cuanto se aleja el GAN de cada momento real.
+
+    Args:
+        ori_data:       (N, T, dim)
+        generated_data: (N, T, dim)
+
+    Returns:
+        dict con momentos reales, generados y errores relativos (abs).
+    """
+    from scipy import stats as sp_stats
+
+    ori = np.asarray(ori_data).flatten()
+    gen = np.asarray(generated_data).flatten()
+
+    def _moments(x):
+        return {
+            "mean":     float(np.mean(x)),
+            "std":      float(np.std(x)),
+            "skewness": float(sp_stats.skew(x)),
+            "kurtosis": float(sp_stats.kurtosis(x)),
+        }
+
+    m_ori = _moments(ori)
+    m_gen = _moments(gen)
+
+    err = {}
+    for k in m_ori:
+        denom = abs(m_ori[k]) if m_ori[k] != 0 else 1.0
+        err[k] = abs(m_ori[k] - m_gen[k]) / denom
+
+    print("Comparacion de momentos:")
+    for k in m_ori:
+        print(f"  {k:<10}  Real={m_ori[k]:+.4f}  Gen={m_gen[k]:+.4f}  err_rel={err[k]:.4f}")
+
+    return {"real": m_ori, "gen": m_gen, "rel_error": err}
+
+
+def VaRCVaR(ori_data, generated_data, levels=(0.95, 0.99)):
+    """Compara VaR y CVaR entre datos reales y sinteticos a distintos niveles.
+
+    VaR(alpha)  = cuantil (1-alpha) de la distribucion de retornos
+                  (perdida maxima con probabilidad alpha).
+    CVaR(alpha) = media de retornos por debajo del VaR (expected shortfall).
+
+    Un GAN bueno debe reproducir estas colas: si falla aqui, los datos sinteticos
+    de regimen stress son inútiles para el agente de RL.
+
+    Args:
+        ori_data:       (N, T, dim)
+        generated_data: (N, T, dim)
+        levels:         niveles de confianza, por defecto (0.95, 0.99)
+
+    Returns:
+        dict con VaR y CVaR para cada nivel, en reales y generados.
+    """
+    ori = np.asarray(ori_data).flatten()
+    gen = np.asarray(generated_data).flatten()
+
+    results = {}
+    print("VaR / CVaR:")
+    for alpha in levels:
+        q = 1.0 - alpha
+        var_ori = float(np.quantile(ori, q))
+        var_gen = float(np.quantile(gen, q))
+        cvar_ori = float(ori[ori <= var_ori].mean())
+        cvar_gen = float(gen[gen <= var_gen].mean())
+
+        results[alpha] = {
+            "VaR_real":  var_ori,  "VaR_gen":  var_gen,
+            "CVaR_real": cvar_ori, "CVaR_gen": cvar_gen,
+            "VaR_diff":  abs(var_ori  - var_gen),
+            "CVaR_diff": abs(cvar_ori - cvar_gen),
+        }
+        print(f"  {int(alpha*100)}%  VaR  → Real={var_ori:+.4f}  Gen={var_gen:+.4f}  |diff|={abs(var_ori-var_gen):.4f}")
+        print(f"  {int(alpha*100)}%  CVaR → Real={cvar_ori:+.4f}  Gen={cvar_gen:+.4f}  |diff|={abs(cvar_ori-cvar_gen):.4f}")
+
+    return results

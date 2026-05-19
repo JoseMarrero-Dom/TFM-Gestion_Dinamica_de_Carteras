@@ -83,11 +83,18 @@ def load_real_flat(data_mode="Train", cache_dir=None):
         use_intraday=True,
         use_windows=False,
     )
-    features = ds.data[0, :, 0, :].T.astype(np.float32)   # (T, 18)
+    # ds.data shape: (1, 18, 1, T) → (T, 18)
+    features = ds.data[0, :, 0, :].T.astype(np.float32)
 
+    # Alinear VIX por fecha, no por posición final, para evitar leakage temporal
     vix_path = os.path.join(cache_dir, "portfolio_vix_20040101_20251231.csv")
-    vix = pd.read_csv(vix_path, index_col=0, parse_dates=True).iloc[:, 0].values
-    vix = vix[-features.shape[0]:].reshape(-1, 1).astype(np.float32)
+    vix_full = pd.read_csv(vix_path, index_col=0, parse_dates=True).iloc[:, 0]
+    split_idx = int(len(vix_full) * ds.train_ratio)
+    if data_mode == "Train":
+        vix_aligned = vix_full.iloc[:split_idx]
+    else:
+        vix_aligned = vix_full.iloc[split_idx:]
+    vix = vix_aligned.values[-features.shape[0]:].reshape(-1, 1).astype(np.float32)
 
     return np.concatenate([features, vix], axis=1)  # (T, 19)
 
@@ -306,11 +313,14 @@ def main():
         if os.path.isdir(os.path.join(LOGS_DIR, d))
         and not d.startswith("portfolio")
     )
-    checkpoints = [
-        (run, os.path.join(LOGS_DIR, run, "Model", "checkpoint"))
-        for run in runs
-        if os.path.exists(os.path.join(LOGS_DIR, run, "Model", "checkpoint"))
-    ]
+    def _find_ckpt(run):
+        for name in ("checkpoint", "checkpoint.zip"):
+            p = os.path.join(LOGS_DIR, run, "Model", name)
+            if os.path.exists(p):
+                return p
+        return None
+
+    checkpoints = [(run, _find_ckpt(run)) for run in runs if _find_ckpt(run)]
 
     # Recoger bloques sintéticos de todos los modelos
     synthetic_blocks = []

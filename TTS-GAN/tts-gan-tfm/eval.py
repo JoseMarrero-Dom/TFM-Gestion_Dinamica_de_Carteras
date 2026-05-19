@@ -4,7 +4,7 @@ import torch
 
 from GANModels import Generator
 from dataLoader import portfolio_load_dataset, DEFAULT_TICKERS
-from visualizationMetrics import JarqueBera, LjungBox, FrobeniusDistance, plot_asset_dashboard
+from visualizationMetrics import JarqueBera, LjungBox, FrobeniusDistance, plot_asset_dashboard, MomentsComparison, VaRCVaR
 
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
@@ -71,6 +71,8 @@ def load_real_data(asset, channels, seq_len, n_samples=1000, filter_regime=["mod
 def eval_run(run_dir):
     ckpt_path = os.path.join(run_dir, "Model", "checkpoint")
     if not os.path.exists(ckpt_path):
+        ckpt_path = os.path.join(run_dir, "Model", "checkpoint.zip")
+    if not os.path.exists(ckpt_path):
         return None
 
     run_name = os.path.basename(run_dir)
@@ -105,9 +107,11 @@ def eval_run(run_dir):
 
     print(f"Datos moderate+stress → reales: {real.shape} | generados: {fake.shape}")
 
-    jb_ori_stat, jb_gen_stat, jb_stat_diff, jb_ori_pval, jb_gen_pval, jb_pval_diff = JarqueBera(real, fake)
+    jb_ori_stat, jb_gen_stat, _, jb_ori_pval, jb_gen_pval, _ = JarqueBera(real, fake)
     lb_ori, lb_gen, lb_diff = LjungBox(real, fake)
     frob = FrobeniusDistance(real, fake)
+    moments = MomentsComparison(real, fake)
+    var_cvar = VaRCVaR(real, fake)
 
     jb_ratio = jb_gen_stat / jb_ori_stat if jb_ori_stat > 0 else float("inf")
     print(f"Jarque-Bera estadístico → Original: {jb_ori_stat:.2f} | Generado: {jb_gen_stat:.2f} | Ratio: {jb_ratio:.2f}x")
@@ -120,6 +124,8 @@ def eval_run(run_dir):
         "jb_ori_pval": jb_ori_pval, "jb_gen_pval": jb_gen_pval,
         "lb_ori": lb_ori, "lb_gen": lb_gen, "lb_diff": lb_diff,
         "frob": frob,
+        "moments": moments,
+        "var_cvar": var_cvar,
     }
     os.makedirs("images", exist_ok=True)
     safe_name = run_name.replace(":", "-")
@@ -156,7 +162,7 @@ def eval_run(run_dir):
 
 def main():
     runs = sorted(
-        [d for d in os.listdir(LOGS_DIR) if os.path.isdir(os.path.join(LOGS_DIR, d)) and d.startswith("portfolio")]
+        [d for d in os.listdir(LOGS_DIR) if os.path.isdir(os.path.join(LOGS_DIR, d))]
     )
     if not runs:
         raise FileNotFoundError(f"No hay experimentos en {LOGS_DIR}")
