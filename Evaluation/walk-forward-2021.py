@@ -32,6 +32,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy import stats
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 RL_DIR  = os.path.abspath(os.path.join(os.path.dirname(__file__), "../RL"))
 GAN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../TTS-GAN/tts-gan-tfm"))
@@ -133,19 +134,59 @@ def _w(action):
     return x / s
 
 
-def run_model(model, data):
-    """Devuelve arrays (log_returns, weights) para todo el periodo."""
+def run_model(model, data, training_env=None):
+    """Devuelve arrays (log_returns, weights) para todo el periodo.
+    
+    Args:
+        model: El modelo PPO entrenado.
+        data: Los datos del periodo de test.
+        training_env: (Opcional) El entorno normalizado usado en el entrenamiento 
+                      para copiar sus estadísticas obs_rms directamente.
+    """
     ipm = IPMModule(m=18)
-    env = PortfolioEnvIPM(data, ipm_module=ipm, episode_weeks=None)
-    obs, _ = env.reset()
-    done   = False
+    # 1. Crear el entorno base de test
+    raw_env = PortfolioEnvIPM(data, ipm_module=ipm, episode_weeks=None)
+    
+    # 2. Convertirlo a entorno vectorial (Obligatorio para usar VecNormalize)
+    env = DummyVecEnv([lambda: raw_env])
+    
+    # 3. Aplicar el wrapper de normalización cargando las estadísticas
+    # Si pasas el objeto del entrenamiento por argumento:
+    if training_env is not None:
+        env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+        env.obs_rms = training_env.obs_rms  # Copia matemática de la normalización
+    else:
+        # Si guardaste las estadísticas en un archivo .pkl durante el entrenamiento:
+        env = VecNormalize.load("../RL/results_gan_augmented/vec_normalize_augmented.pkl", env)
+    
+    # 4. Congelar el entorno para el modo Test
+    env.training = False     # Evita que las observaciones de test alteren la media/varianza aprendidas
+    env.norm_reward = False  # Las recompensas no se normalizan en test para calcular métricas reales
+    
+    obs = env.reset()
+    done = False
     lr, wh = [], []
+    
     while not done:
+        # deterministic=True apaga la entropía y el ruido SDE (ejecución pura)
         action, _ = model.predict(obs, deterministic=True)
-        wh.append(_w(action).copy())
-        obs, reward, terminated, truncated, info = env.step(action)
-        lr.append(float(info.get("portfolio_log_ret", reward)))
-        done = terminated or truncated
+        
+        step_outputs = env.step(action)
+        
+        # Controlamos si el entorno es vectorial (4 salidas) o normal (5 salidas)
+        if len(step_outputs) == 4:
+            obs, reward, dones, infos = step_outputs
+            info = infos[0] # Si es vectorial, extraemos el primer diccionario
+            done = bool(dones)
+        else:
+            obs, reward, terminated, truncated, info = step_outputs
+            # Si es un entorno normal, 'info' ya es el diccionario directo
+            done = terminated or truncated
+            
+        # Extraemos el retorno de tu cartera de forma segura
+        port_ret = float(info.get("portfolio_log_ret", reward))
+        lr.append(port_ret)
+        
     return np.array(lr), np.array(wh)
 
 
@@ -185,7 +226,7 @@ def compute_metrics(lr, freq=FREQ_ANNUAL, var_conf=0.95):
 
 # ── Diebold-Mariano ────────────────────────────────────────────────────────────
 
-def diebold_mariano(lr1, lr2, h=1):
+def diebold_mariano(lr1, lr2, h=5):
     """
     Contrasta H0: E[L(r1)] = E[L(r2)]  con pérdida L = -retorno.
     d_t > 0 implica que el modelo 2 supera al modelo 1 en t.
