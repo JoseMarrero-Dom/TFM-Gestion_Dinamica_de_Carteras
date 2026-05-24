@@ -26,9 +26,11 @@ class ETACallback(BaseCallback):
 
 
 class PPOAgent:
-    def __init__(self, env, seed=None):
+    def __init__(self, env, seed=None, learning_rate=3e-4):
         self.env = env
-        self.model = PPO('MlpPolicy', env, seed=seed, verbose=1, device='cpu', learning_rate=3e-5)
+        self.model = PPO('MlpPolicy', env, seed=seed, verbose=1, device='cpu', learning_rate=learning_rate,
+                         ent_coef=0.001, use_sde=True, sde_sample_freq=4, target_kl=0.015,
+                         vf_coef=1.0, n_steps=4096, n_epochs=5, clip_range=0.1, batch_size=512)
 
     def train(self, total_timesteps):
         self.model.learn(total_timesteps=total_timesteps,

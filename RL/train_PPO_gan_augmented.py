@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 RL_DIR   = os.path.dirname(__file__)
@@ -33,7 +34,7 @@ from IPM.ipm import IPMModule
 ALL_ASSETS  = list(DEFAULT_TICKERS.keys())   # orden fijo del dataLoader
 N_ASSETS    = len(ALL_ASSETS)                # 6
 VIX_STRESS  = 25.0   # valor VIX representativo para las ventanas sintéticas
-N_SYNTHETIC = 500     # ventanas sintéticas a generar por modelo
+N_SYNTHETIC = 2000     # ventanas sintéticas a generar por modelo
 
 
 # ── utilidades GAN ────────────────────────────────────────────────────────────
@@ -73,29 +74,28 @@ def _generate_windows(gen, latent_dim, n):
 # ── carga de datos reales ──────────────────────────────────────────────────────
 
 def load_real_flat(data_mode="Train", cache_dir=None):
-    """Carga datos reales sin normalizar ni ventanear — shape (T, 19)."""
     if cache_dir is None:
         cache_dir = os.path.join(RL_DIR, "data_cache")
     ds = portfolio_load_dataset(
         data_mode=data_mode,
+        split_date="2021-01-01",
         is_normalize=False,
         log_returns=True,
         use_intraday=True,
         use_windows=False,
     )
-    # ds.data shape: (1, 18, 1, T) → (T, 18)
-    features = ds.data[0, :, 0, :].T.astype(np.float32)
+    features = ds.data[0, :, 0, :].T.astype(np.float32)  # (T, 18)
+    T = features.shape[0]
 
-    # Alinear VIX por fecha, no por posición final, para evitar leakage temporal
     vix_path = os.path.join(cache_dir, "portfolio_vix_20040101_20251231.csv")
     vix_full = pd.read_csv(vix_path, index_col=0, parse_dates=True).iloc[:, 0]
-    split_idx = int(len(vix_full) * ds.train_ratio)
-    if data_mode == "Train":
-        vix_aligned = vix_full.iloc[:split_idx]
-    else:
-        vix_aligned = vix_full.iloc[split_idx:]
-    vix = vix_aligned.values[-features.shape[0]:].reshape(-1, 1).astype(np.float32)
 
+    if data_mode == "Train":
+        vix = vix_full.values[:T]
+    else:
+        vix = vix_full.values[-T:]
+
+    vix = vix.reshape(-1, 1).astype(np.float32)
     return np.concatenate([features, vix], axis=1)  # (T, 19)
 
 
@@ -103,12 +103,13 @@ def load_stress_windows(seq_len, n_samples=1000):
     """Ventanas reales de régimen moderate+stress — shape (N, T, 18)."""
     ds = portfolio_load_dataset(
         data_mode="Train",
+        split_date="2021-01-01",
         is_normalize=False,
         log_returns=True,
         use_intraday=True,
         use_windows=True,
         window_length=seq_len,
-        stride=1,
+        stride=8,
         label_mode="regime",
         filter_regime=["moderate", "stress"],
     )
@@ -193,11 +194,28 @@ def inject_single_asset(stress_windows_real, gen_windows_norm, asset_name, mean,
 
 
 # ── entrenamiento PPO ──────────────────────────────────────────────────────────
+from typing import Callable
+
+def linear_schedule(initial_value: float, floor_value: float = 1e-5) -> Callable[[float], float]:
+    """
+    Planificador de tasa de aprendizaje lineal.
+    
+    Args:
+        initial_value: El learning rate con el que empezará el entrenamiento.
+        floor_value: El learning rate mínimo permitido.
+    Returns:
+        Una función que calcula el learning rate actual basado en el progreso restante.
+    """
+    def func(progress_remaining: float) -> float:
+        # progress_remaining va desde 1.0 (inicio) hasta 0.0 (final del entrenamiento)
+        lr = progress_remaining * initial_value
+        return max(lr, floor_value)
+    return func
 
 def train_and_eval(real_data, test_data, ipm, out_dir,
                    synthetic_data=None,
-                   timesteps_real=2_000_000,
-                   timesteps_finetune=0):
+                   timesteps_real=2_500_000,
+                   timesteps_finetune=20_000_000):
     """
     Fase 1: entrena PPO solo con datos reales.
     Fase 2: si hay sintéticos, continúa entrenando con reales + sintéticos
@@ -209,13 +227,27 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     print(f"\n{'='*60}")
     print(f"Fase 1 — entrenando PPO con datos reales ({len(real_data)} pasos)")
     env_real  = PortfolioEnv(real_data, ipm_module=ipm, episode_weeks=52, reward_scale=50)
-    agent     = PPOAgent(env_real, seed=0)
+    env_wrapped = DummyVecEnv([lambda: env_real])
+    env_normalized = VecNormalize(env_wrapped, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    
+    agent     = PPOAgent(env_normalized, seed=0, learning_rate=3e-4)
     agent.train(total_timesteps=timesteps_real)
     agent.save(os.path.join(out_dir, "ppo_baseline"))
+    # Guardamos las estadísticas de normalización de la Fase 1
+    env_normalized.save(os.path.join(out_dir, "vec_normalize_baseline.pkl"))
 
-    env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=None)
+    # EVALUACIÓN FASE 1: Creamos el entorno de test normalizado con datos de Fase 1
+    raw_env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=None)
+    env_test_vec = DummyVecEnv([lambda: raw_env_test])
+    env_test_normalized = VecNormalize(env_test_vec, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    
+    # Copiamos y congelamos estadísticas para el test
+    env_test_normalized.obs_rms = env_normalized.obs_rms
+    env_test_normalized.training = False
+    env_test_normalized.norm_reward = False
+
     metrics_base = evaluate_and_plot(
-        agent.model, env_test,
+        agent.model, env_test_normalized, # <── Pasamos el entorno vectorizado y normalizado
         out_path=os.path.join(out_dir, "eval_baseline.png")
     )
     print(f"Baseline  → Sharpe: {metrics_base['sharpe']:.3f}  "
@@ -232,12 +264,26 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     print(f"  {len(real_data)} reales + {n_synth} sintéticos = {len(augmented)} total")
 
     env_aug = PortfolioEnv(augmented, ipm_module=ipm, episode_weeks=52, reward_scale=50)
-    agent.model.set_env(env_aug)
+    env_wrapped_aug = DummyVecEnv([lambda: env_aug])
+    env_normalized_aug = VecNormalize(env_wrapped_aug, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    
+    # CRÍTICO: Transferir la experiencia de normalización de la Fase 1 a la Fase 2
+    env_normalized_aug.obs_rms = env_normalized.obs_rms
+    
+    agent.model.set_env(env_normalized_aug)
+    agent.model.lr_schedule = linear_schedule(3e-4)
     agent.train(total_timesteps=timesteps_finetune)
     agent.save(os.path.join(out_dir, "ppo_augmented"))
+    env_normalized_aug.save(os.path.join(out_dir, "vec_normalize_augmented.pkl"))
+
+    # EVALUACIÓN FASE 2: Sincronizamos el entorno de test con las nuevas estadísticas
+    env_test_normalized_aug = VecNormalize(env_test_vec, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    env_test_normalized_aug.obs_rms = env_normalized_aug.obs_rms
+    env_test_normalized_aug.training = False
+    env_test_normalized_aug.norm_reward = False
 
     metrics_aug = evaluate_and_plot(
-        agent.model, env_test,
+        agent.model, env_test_normalized_aug, # <── Pasamos el nuevo entorno de test adaptado
         out_path=os.path.join(out_dir, "eval_augmented.png")
     )
     print(f"Aumentado → Sharpe: {metrics_aug['sharpe']:.3f}  "
@@ -246,11 +292,10 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
 
     return {"baseline": metrics_base, "augmented": metrics_aug}
 
-
 def evaluate_and_plot(model, env, freq=52, var_conf=0.95, out_path=None):
     asset_names = ALL_ASSETS + ["Cash"]
 
-    obs, _ = env.reset()
+    obs = env.reset()
     done   = False
     log_returns, equity, weights_hist = [], [1.0], []
 
@@ -258,11 +303,12 @@ def evaluate_and_plot(model, env, freq=52, var_conf=0.95, out_path=None):
         action, _ = model.predict(obs, deterministic=True)
         w = _action_to_weights(action)
         weights_hist.append(w.copy())
-        obs, _, terminated, truncated, info = env.step(action)
+        obs, reward, dones, infos = env.step(action)
+        info = infos[0]
         port_ret = float(info["portfolio_log_ret"])
         log_returns.append(port_ret)
         equity.append(equity[-1] * np.exp(port_ret))
-        done = terminated or truncated
+        done = bool(dones[0])
 
     lr  = np.asarray(log_returns)
     eq  = np.asarray(equity)
