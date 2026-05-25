@@ -214,8 +214,8 @@ def linear_schedule(initial_value: float, floor_value: float = 1e-5) -> Callable
 
 def train_and_eval(real_data, test_data, ipm, out_dir,
                    synthetic_data=None,
-                   timesteps_real=2_500_000,
-                   timesteps_finetune=20_000_000):
+                   timesteps_real=1_500_000,
+                   timesteps_finetune=0):
     """
     Fase 1: entrena PPO solo con datos reales.
     Fase 2: si hay sintéticos, continúa entrenando con reales + sintéticos
@@ -230,7 +230,7 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     env_wrapped = DummyVecEnv([lambda: env_real])
     env_normalized = VecNormalize(env_wrapped, norm_obs=True, norm_reward=True, clip_obs=10.0)
     
-    agent     = PPOAgent(env_normalized, seed=0, learning_rate=3e-4)
+    agent     = PPOAgent(env_normalized, seed=42, learning_rate=linear_schedule(3e-4))
     agent.train(total_timesteps=timesteps_real)
     agent.save(os.path.join(out_dir, "ppo_baseline"))
     # Guardamos las estadísticas de normalización de la Fase 1

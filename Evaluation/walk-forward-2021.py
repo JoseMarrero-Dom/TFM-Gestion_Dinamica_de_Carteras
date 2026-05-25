@@ -157,7 +157,7 @@ def run_model(model, data, training_env=None):
         env.obs_rms = training_env.obs_rms  # Copia matemática de la normalización
     else:
         # Si guardaste las estadísticas en un archivo .pkl durante el entrenamiento:
-        env = VecNormalize.load("../RL/results_gan_augmented/vec_normalize_augmented.pkl", env)
+        env = VecNormalize.load("../RL/results_gan_augmented/vec_normalize_baseline.pkl", env)
     
     # 4. Congelar el entorno para el modo Test
     env.training = False     # Evita que las observaciones de test alteren la media/varianza aprendidas
