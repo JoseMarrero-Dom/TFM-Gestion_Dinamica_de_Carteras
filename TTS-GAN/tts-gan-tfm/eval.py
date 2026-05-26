@@ -4,7 +4,11 @@ import torch
 
 from GANModels import Generator
 from dataLoader import portfolio_load_dataset, DEFAULT_TICKERS
-from visualizationMetrics import JarqueBera, LjungBox, FrobeniusDistance, plot_asset_dashboard, MomentsComparison, VaRCVaR
+from visualizationMetrics import (
+    JarqueBera, LjungBox, FrobeniusDistance,
+    MomentsComparison, VaRCVaR, ACFLinear,
+    plot_asset_dashboard, visualization,
+)
 
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
@@ -99,6 +103,13 @@ def eval_run(run_dir):
         print(f"Error cargando datos reales: {e}")
         return None
 
+    # seed fijo para reproducibilidad: si no se fija aquí, las tasas de rechazo
+    # JB/LB, kurtosis y demás varían entre ejecuciones porque gen(torch.randn(...))
+    # ve ruido distinto cada vez.
+    SAMPLING_SEED = 42
+    torch.manual_seed(SAMPLING_SEED)
+    np.random.seed(SAMPLING_SEED)
+
     N = len(real)
     z = torch.randn(N, latent_dim)
     with torch.no_grad():
@@ -107,56 +118,100 @@ def eval_run(run_dir):
 
     print(f"Datos moderate+stress → reales: {real.shape} | generados: {fake.shape}")
 
-    jb_ori_stat, jb_gen_stat, _, jb_ori_pval, jb_gen_pval, _ = JarqueBera(real, fake)
-    lb_ori, lb_gen, lb_diff = LjungBox(real, fake)
-    frob = FrobeniusDistance(real, fake)
-    moments = MomentsComparison(real, fake)
-    var_cvar = VaRCVaR(real, fake)
+    # canales de logret: si la GAN usa 3 canales/activo (logret, oc, hl), los logret son 0,3,6,...
+    use_intraday  = (channels % 3 == 0)
+    n_assets_eval = channels // 3 if use_intraday else channels
+    logret_chans  = list(range(0, channels, 3)) if use_intraday else list(range(channels))
 
-    jb_ratio = jb_gen_stat / jb_ori_stat if jb_ori_stat > 0 else float("inf")
-    print(f"Jarque-Bera estadístico → Original: {jb_ori_stat:.2f} | Generado: {jb_gen_stat:.2f} | Ratio: {jb_ratio:.2f}x")
-    print(f"Jarque-Bera p-valor     → Original: {jb_ori_pval:.2e} | Generado: {jb_gen_pval:.2e}")
-    print(f"Ljung-Box²  p-valor     → Original: {lb_ori:.6f} | Generado: {lb_gen:.6f} | Diferencia: {lb_diff:.6f}")
-    print(f"Frobenius               → {frob:.6f}")
+    jb_global   = JarqueBera(real, fake)
+    lb_global   = LjungBox(real, fake)
+    frob_global = FrobeniusDistance(real, fake)
+    mom_global  = MomentsComparison(real, fake)
+    var_global  = VaRCVaR(real, fake, logret_channels=logret_chans)
+    acf_global  = ACFLinear(real, fake, lag=1)
+
+    print(f"Jarque-Bera → rechazo H0  Real: {jb_global['reject_real']*100:.1f}%  Gen: {jb_global['reject_gen']*100:.1f}%  Δ={jb_global['reject_diff_pp']:.1f}pp")
+    print(f"Ljung-Box r² → GARCH      Real: {lb_global['garch_real']*100:.1f}%  Gen: {lb_global['garch_gen']*100:.1f}%  Δ={lb_global['garch_diff_pp']:.1f}pp")
+    print(f"Ljung-Box r  → AC lineal  Real: {lb_global['linear_ac_real']*100:.1f}%  Gen: {lb_global['linear_ac_gen']*100:.1f}%  Δ={lb_global['linear_ac_diff_pp']:.1f}pp")
+    print(f"ACF(1) lineal mediana     Real: {acf_global['acf_real_med']:.3f}  Gen: {acf_global['acf_gen_med']:.3f}  Δ={acf_global['acf_diff_med']:.3f}")
+    print(f"Frobenius relativo        {frob_global['frob_rel']:.3f}  (abs {frob_global['frob_abs']:.3f})")
+    print(f"Momentos     skew |Δ|={mom_global['skew_mean_abs_diff']:.3f}   kurt err_rel={mom_global['kurt_mean_rel_err']:.3f}")
+    print(f"VaR 95% err_rel={var_global[0.95]['var_mean_rel_err']:.3f}   CVaR 95% err_rel={var_global[0.95]['cvar_mean_rel_err']:.3f}")
 
     metrics = {
-        "jb_ori_stat": jb_ori_stat, "jb_gen_stat": jb_gen_stat, "jb_ratio": jb_ratio,
-        "jb_ori_pval": jb_ori_pval, "jb_gen_pval": jb_gen_pval,
-        "lb_ori": lb_ori, "lb_gen": lb_gen, "lb_diff": lb_diff,
-        "frob": frob,
-        "moments": moments,
-        "var_cvar": var_cvar,
+        "jb":         jb_global,
+        "lb":         lb_global,
+        "frob":       frob_global,
+        "moments":    mom_global,
+        "var_cvar":   var_global,
+        "acf_linear": acf_global,
     }
     os.makedirs("images", exist_ok=True)
     safe_name = run_name.replace(":", "-")
 
     if channels == 18:
-        # Un dashboard por activo (3 canales cada uno: logret, oc_range, hl_range)
+        # un dashboard + un PCA/t-SNE por activo (3 canales: logret, oc_range, hl_range)
         for i, aname in enumerate(ALL_ASSET_NAMES):
             c0, c1 = i * 3, i * 3 + 3
-            plot_asset_dashboard(
-                real[:, :, c0:c1], fake[:, :, c0:c1],
-                metrics, aname,
-                f"images/{safe_name}_{aname}_dashboard.png",
-            )
+            real_a = real[:, :, c0:c1]
+            fake_a = fake[:, :, c0:c1]
+            metrics_a = {
+                "jb":         JarqueBera(real_a, fake_a),
+                "lb":         LjungBox(real_a, fake_a),
+                "frob":       FrobeniusDistance(real_a, fake_a),
+                "moments":    MomentsComparison(real_a, fake_a),
+                "var_cvar":   VaRCVaR(real_a, fake_a, logret_channels=[0]),
+                "acf_linear": ACFLinear(real_a, fake_a),
+            }
+            plot_asset_dashboard(real_a, fake_a, metrics_a, aname,
+                                 f"images/{safe_name}_{aname}_dashboard.png")
+            visualization(real_a, fake_a,
+                          f"images/{safe_name}_{aname}_pca_tsne.png", asset_name=aname)
+        # un PCA/t-SNE conjunto con todos los canales (vista global del portfolio)
+        visualization(real, fake,
+                      f"images/{safe_name}_portfolio_pca_tsne.png", asset_name="portfolio")
     else:
-        plot_asset_dashboard(real, fake, metrics, asset if asset else "portfolio",
+        label = asset if asset else "portfolio"
+        plot_asset_dashboard(real, fake, metrics, label,
                              f"images/{safe_name}_dashboard.png")
+        visualization(real, fake,
+                      f"images/{safe_name}_pca_tsne.png", asset_name=label)
 
-    # Criterios de aceptacion (Tabla 6.8 TFM)
-    jb_pass   = jb_gen_pval < 0.05   # rechaza normalidad
-    lb_pass   = lb_gen < 0.05        # detecta efecto GARCH
-    frob_pass = 0.87 <= frob <= 1.31
+    # Criterios (hechos estilizados de Cont, 2001):
+    #   JB: tasas de rechazo de normalidad parecidas en real y gen (Δ<10pp).
+    #   LB r²: GARCH presente en gen y diferencia con real pequeña.
+    #   LB r y ACF(1) lineal: cerca de 0 en ambos (mercado eficiente).
+    #   Frobenius relativo: estructura de correlaciones bien reproducida.
+    #   Kurtosis: error relativo < 25% (las colas son críticas para riesgo).
+    jb_pass   = jb_global["reject_diff_pp"] < 10.0
+    lb_pass   = lb_global["garch_diff_pp"]  < 15.0 and lb_global["garch_gen"] > 0.5
+    acf_pass  = acf_global["acf_diff_med"]  < 0.05
+    frob_pass = frob_global["frob_rel"]      < 0.30
+    kurt_pass = mom_global["kurt_mean_rel_err"] < 0.25
     print(f"Criterios → JB {'OK' if jb_pass else 'FALLO'} | "
           f"LB² {'OK' if lb_pass else 'FALLO'} | "
-          f"Frobenius {'OK' if frob_pass else 'FALLO'} (rango 0.87–1.31)")
+          f"ACF {'OK' if acf_pass else 'FALLO'} | "
+          f"Frob {'OK' if frob_pass else 'FALLO'} | "
+          f"Kurt {'OK' if kurt_pass else 'FALLO'}")
 
     return {
         "run": run_name,
         "channels": channels,
         "asset": asset if asset else "todos",
-        **metrics,
-        "jb_pass": jb_pass, "lb_pass": lb_pass, "frob_pass": frob_pass,
+        "jb_reject_real_pct":  jb_global["reject_real"] * 100,
+        "jb_reject_gen_pct":   jb_global["reject_gen"]  * 100,
+        "jb_reject_diff_pp":   jb_global["reject_diff_pp"],
+        "lb_garch_real_pct":   lb_global["garch_real"] * 100,
+        "lb_garch_gen_pct":    lb_global["garch_gen"]  * 100,
+        "lb_garch_diff_pp":    lb_global["garch_diff_pp"],
+        "acf_real":            acf_global["acf_real_med"],
+        "acf_gen":             acf_global["acf_gen_med"],
+        "frob_rel":            frob_global["frob_rel"],
+        "kurt_err":            mom_global["kurt_mean_rel_err"],
+        "var95_err":           var_global[0.95]["var_mean_rel_err"],
+        "cvar95_err":          var_global[0.95]["cvar_mean_rel_err"],
+        "jb_pass": jb_pass, "lb_pass": lb_pass, "acf_pass": acf_pass,
+        "frob_pass": frob_pass, "kurt_pass": kurt_pass,
     }
 
 
@@ -178,16 +233,23 @@ def main():
         print("\nNo se encontro ningun checkpoint valido en logs/")
         return
 
-    print(f"\n{'='*60}")
+    print(f"\n{'='*100}")
     print("RESUMEN FINAL")
-    print(f"{'='*60}")
-    header = f"{'Run':<35} {'Ch':>3} {'Activo':<10} {'JB_ratio':>9} {'JB_pval':>9} {'LB²_pval':>9} {'Frob':>8}  Criterios"
+    print(f"{'='*100}")
+    header = (f"{'Run':<35} {'Ch':>3} {'Activo':<10} "
+              f"{'JB_Δpp':>7} {'GARCH_Δpp':>10} {'ACF_Δ':>7} {'Frob_rel':>9} {'Kurt_err':>9}  Criterios")
     print(header)
     print("-" * len(header))
     for r in resultados:
-        criterios = f"JB={'OK' if r['jb_pass'] else 'X'} LB={'OK' if r['lb_pass'] else 'X'} Fr={'OK' if r['frob_pass'] else 'X'}"
+        crit = (f"JB={'O' if r['jb_pass'] else 'X'} "
+                f"LB={'O' if r['lb_pass'] else 'X'} "
+                f"AC={'O' if r['acf_pass'] else 'X'} "
+                f"Fr={'O' if r['frob_pass'] else 'X'} "
+                f"Kt={'O' if r['kurt_pass'] else 'X'}")
+        acf_diff = abs(r["acf_real"] - r["acf_gen"])
         print(f"{r['run']:<35} {r['channels']:>3} {r['asset']:<10} "
-              f"{r['jb_ratio']:>8.2f}x {r['jb_gen_pval']:>9.2e} {r['lb_gen']:>9.4f} {r['frob']:>8.4f}  {criterios}")
+              f"{r['jb_reject_diff_pp']:>7.1f} {r['lb_garch_diff_pp']:>10.1f} "
+              f"{acf_diff:>7.3f} {r['frob_rel']:>9.3f} {r['kurt_err']:>9.3f}  {crit}")
 
 
 if __name__ == "__main__":

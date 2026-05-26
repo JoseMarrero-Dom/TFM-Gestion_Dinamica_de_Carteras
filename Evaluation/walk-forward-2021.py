@@ -1,12 +1,9 @@
 """
 Walk-forward backtesting 2021–2025 del agente PPO.
 
-Métricas: Sharpe (1994), Sortino (1994), MDD — desagregadas por subperiodo
-de régimen VIX y por episodios explícitos (guerra Rusia-Ucrania 2022,
-crisis bancaria regional 2023).
-
-Test de Diebold-Mariano (1995) entre el modelo principal y un baseline
-opcional para determinar significación estadística de la diferencia.
+Métricas: Sharpe (1994), Sortino (1994), Calmar, MDD, VaR/CVaR al 95%,
+hit rate y turnover — desagregadas por subperiodo de régimen VIX y por
+episodios explícitos (guerra Rusia-Ucrania 2022, crisis bancaria 2023).
 
 Uso:
     # listar modelos disponibles
@@ -15,12 +12,6 @@ Uso:
     # evaluar un modelo concreto
     python walk-forward-2021.py --model_dir ../RL/results_gan_augmented \\
                                 --model_name ppo_augmented
-
-    # evaluar + comparar con baseline (test DM)
-    python walk-forward-2021.py --model_dir ../RL/results_gan_augmented \\
-                                --model_name ppo_augmented \\
-                                --baseline_dir ../RL \\
-                                --baseline_name ppo_portfolio
 """
 
 import argparse
@@ -31,7 +22,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from scipy import stats
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 RL_DIR  = os.path.abspath(os.path.join(os.path.dirname(__file__), "../RL"))
@@ -135,59 +125,52 @@ def _w(action):
 
 
 def run_model(model, data, training_env=None):
-    """Devuelve arrays (log_returns, weights) para todo el periodo.
-    
+    """Devuelve arrays (log_returns, weights, rebalance_freq) para todo el periodo.
+
     Args:
         model: El modelo PPO entrenado.
         data: Los datos del periodo de test.
-        training_env: (Opcional) El entorno normalizado usado en el entrenamiento 
+        training_env: (Opcional) El entorno normalizado usado en el entrenamiento
                       para copiar sus estadísticas obs_rms directamente.
     """
     ipm = IPMModule(m=18)
-    # 1. Crear el entorno base de test
     raw_env = PortfolioEnvIPM(data, ipm_module=ipm, episode_weeks=None)
-    
-    # 2. Convertirlo a entorno vectorial (Obligatorio para usar VecNormalize)
+    rebalance_freq = raw_env.rebalance_freq
+
     env = DummyVecEnv([lambda: raw_env])
-    
-    # 3. Aplicar el wrapper de normalización cargando las estadísticas
-    # Si pasas el objeto del entrenamiento por argumento:
     if training_env is not None:
         env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
-        env.obs_rms = training_env.obs_rms  # Copia matemática de la normalización
+        env.obs_rms = training_env.obs_rms
     else:
-        # Si guardaste las estadísticas en un archivo .pkl durante el entrenamiento:
         env = VecNormalize.load("../RL/results_gan_augmented/vec_normalize_baseline.pkl", env)
-    
-    # 4. Congelar el entorno para el modo Test
-    env.training = False     # Evita que las observaciones de test alteren la media/varianza aprendidas
-    env.norm_reward = False  # Las recompensas no se normalizan en test para calcular métricas reales
-    
+
+    env.training    = False
+    env.norm_reward = False
+
     obs = env.reset()
     done = False
     lr, wh = [], []
-    
+
     while not done:
-        # deterministic=True apaga la entropía y el ruido SDE (ejecución pura)
         action, _ = model.predict(obs, deterministic=True)
-        
         step_outputs = env.step(action)
-        
-        # Controlamos si el entorno es vectorial (4 salidas) o normal (5 salidas)
         if len(step_outputs) == 4:
             obs, reward, dones, infos = step_outputs
-            info = infos[0] # Si es vectorial, extraemos el primer diccionario
+            info = infos[0]
             done = bool(dones)
         else:
             obs, reward, terminated, truncated, info = step_outputs
-            # Si es un entorno normal, 'info' ya es el diccionario directo
             done = terminated or truncated
-            
-        # Extraemos el retorno de tu cartera de forma segura
+
         port_ret = float(info.get("portfolio_log_ret", reward))
         lr.append(port_ret)
-        
-    return np.array(lr), np.array(wh)
+        # capturamos los pesos post-drift del entorno (no del wrapper) para turnover
+        try:
+            wh.append(env.get_attr("weights")[0].copy())
+        except Exception:
+            pass
+
+    return np.array(lr), np.array(wh), rebalance_freq
 
 
 # ── métricas ───────────────────────────────────────────────────────────────────
@@ -195,65 +178,67 @@ def run_model(model, data, training_env=None):
 METRIC_KEYS = ["n_decisiones", "ret_anualizado", "vol_anualizada",
                "sharpe", "sortino", "mdd", "var_95pct", "ret_total"]
 
-def compute_metrics(lr, freq=FREQ_ANNUAL, var_conf=0.95):
+
+def compute_metrics(lr, freq=FREQ_ANNUAL, rebalance_freq=5, var_conf=0.95):
+    """Métricas de cartera sobre log-returns por decisión.
+
+    Convenciones:
+      - Sharpe (Sharpe, 1994):  √(decisiones/año) · mean / std  con rf=0.
+        Es un ratio; se anualiza por convención académica aunque el periodo
+        sea más corto que un año.
+      - Sortino (Sortino & Price, 1994): downside deviation calculada con
+        sqrt(mean(min(r,0)^2)) sobre TODO el periodo, no solo los negativos
+        (la versión "solo negativos" sobreestima sistemáticamente el ratio).
+      - ret_anualizado y vol_anualizada: solo tienen sentido cuando el
+        periodo evaluado cubre al menos un año hábil. Para subperiodos más
+        cortos (eventos, regímenes con pocos días) se devuelven NaN para
+        no extrapolar una rentabilidad anual a partir de pocos datos.
+      - VaR histórico al nivel var_conf.
+    """
     if len(lr) == 0:
         return {k: np.nan for k in METRIC_KEYS}
-    mean    = lr.mean()
-    std     = lr.std() + 1e-10
-    # cada entrada cubre rebalance_freq días → anualizar en función de decisiones/año
-    decisions_per_year = freq / 5
-    sharpe  = np.sqrt(decisions_per_year) * mean / std
-    down    = lr[lr < 0]
-    sortino = np.sqrt(decisions_per_year) * mean / (np.sqrt((down**2).mean()) + 1e-10) if len(down) else np.inf
-    eq      = np.concatenate([[1.0], np.exp(np.cumsum(lr))])
-    peak    = np.maximum.accumulate(eq)
-    mdd     = (eq / peak - 1).min()
-    var     = np.percentile(lr, (1 - var_conf) * 100)
-    total   = float(eq[-1] - 1)
-    ann_ret = float((1 + total) ** (decisions_per_year / len(lr)) - 1)
-    ann_vol = float(std * np.sqrt(decisions_per_year))
+
+    decisions_per_year = freq / rebalance_freq
+    # un año natural de mercado da exactamente int(decisions_per_year)=50
+    # decisiones (252/5=50.4 → 50 enteras). Pedir 252 días estrictos dejaría
+    # fuera los años completos por el redondeo.
+    is_annualizable = len(lr) >= int(decisions_per_year)
+
+    mean = lr.mean()
+    std  = lr.std() + 1e-10
+
+    sharpe = np.sqrt(decisions_per_year) * mean / std
+
+    downside = np.minimum(lr, 0.0)
+    dd_dev   = np.sqrt(np.mean(downside ** 2))
+    sortino  = np.sqrt(decisions_per_year) * mean / dd_dev if dd_dev > 1e-10 else np.nan
+
+    eq   = np.concatenate([[1.0], np.exp(np.cumsum(lr))])
+    peak = np.maximum.accumulate(eq)
+    mdd  = float((eq / peak - 1).min())
+
+    q   = (1 - var_conf) * 100
+    var = float(np.percentile(lr, q))
+
+    total = float(eq[-1] - 1)
+
+    if is_annualizable and total > -1:
+        ann_ret = float((1 + total) ** (decisions_per_year / len(lr)) - 1)
+        ann_vol = float(std * np.sqrt(decisions_per_year))
+    else:
+        ann_ret = np.nan
+        ann_vol = np.nan
+
     return {
-        "n_decisiones": len(lr),
+        "n_decisiones":  len(lr),
         "ret_anualizado": ann_ret,
         "vol_anualizada": ann_vol,
-        "sharpe": sharpe,
+        "sharpe":  sharpe,
         "sortino": sortino,
-        "mdd": mdd,
-        "var_95pct": var,
-        "ret_total": total,
+        "mdd":     mdd,
+        "var_95pct":  var,
+        "ret_total":  total,
     }
-
-
-# ── Diebold-Mariano ────────────────────────────────────────────────────────────
-
-def diebold_mariano(lr1, lr2, h=5):
-    """
-    Contrasta H0: E[L(r1)] = E[L(r2)]  con pérdida L = -retorno.
-    d_t > 0 implica que el modelo 2 supera al modelo 1 en t.
-    Devuelve (estadístico DM, p-valor bilateral, media_diferencia).
-    Usa corrección HAC de Harvey, Leybourne y Newbold (1997).
-    """
-    n = min(len(lr1), len(lr2))
-    lr1, lr2 = lr1[:n], lr2[:n]
-    d = lr2 - lr1                    # diferencial de pérdida (positivo = modelo2 mejor)
-    d_bar = d.mean()
-    T = len(d)
-
-    # varianza HAC con h-1 retardos
-    gamma = [np.mean((d - d_bar) * (np.roll(d, k) - d_bar)) for k in range(h)]
-    var_d = (gamma[0] + 2 * sum(gamma[1:])) / T
-
-    if var_d <= 0:
-        return np.nan, np.nan, d_bar
-
-    dm_stat = d_bar / np.sqrt(var_d)
-
-    # corrección de Harvey et al. (1997)
-    correction = np.sqrt((T + 1 - 2*h + h*(h-1)/T) / T)
-    dm_stat_c  = dm_stat * correction
-    p_value    = 2 * (1 - stats.t.cdf(abs(dm_stat_c), df=T - 1))
-
-    return dm_stat_c, p_value, d_bar
 
 
 # ── clasificación de regímenes y eventos ──────────────────────────────────────
@@ -334,6 +319,66 @@ def plot_equity_regimes(lr, dates, vix, event_lrs, model_name, out_path):
     print(f"Guardado → {out_path}")
 
 
+def plot_portfolio_boxplot(weights, asset_labels, title, out_path):
+    """Box-plot de la composición de cartera: una caja por activo (+ cash)
+    mostrando la distribución de los pesos asignados a lo largo del periodo.
+    """
+    fig, ax = plt.subplots(figsize=(max(8, 1.2 * len(asset_labels) + 1), 5))
+    cols = [weights[:, i] for i in range(weights.shape[1])]
+    bp = ax.boxplot(cols, labels=asset_labels, patch_artist=True, showmeans=True,
+                    meanprops=dict(marker="D", markerfacecolor="black",
+                                   markeredgecolor="black", markersize=4),
+                    medianprops=dict(color="black", linewidth=1.2),
+                    flierprops=dict(marker="o", markersize=3, alpha=0.5))
+
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+               "#9467bd", "#8c564b", "#7f7f7f"]
+    for patch, c in zip(bp["boxes"], palette[:len(cols)]):
+        patch.set_facecolor(c); patch.set_alpha(0.6)
+
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_ylabel("Peso asignado")
+    ax.set_title(title, fontsize=11, fontweight="bold")
+    ax.grid(axis="y", alpha=0.3)
+
+    for i, col in enumerate(cols, start=1):
+        med = np.median(col); mean = np.mean(col)
+        ax.text(i, 1.0, f"med={med:.2f}\nμ={mean:.2f}",
+                ha="center", va="top", fontsize=7, color="dimgray")
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Guardado → {out_path}")
+
+
+def plot_portfolio_boxplots_by_year(weights, dates, asset_labels, model_name, out_dir):
+    """Genera una gráfica por año (más la global) con la distribución de
+    pesos por activo. Cada gráfica es un PNG independiente.
+    """
+    if len(weights) == 0:
+        print("Sin pesos capturados, no se pueden hacer box-plots de cartera.")
+        return
+
+    n = min(len(weights), len(dates))
+    weights = weights[:n]; dates = dates[:n]
+
+    plot_portfolio_boxplot(
+        weights, asset_labels,
+        f"Distribución de cartera — Global 2021–2025 — {model_name}",
+        os.path.join(out_dir, f"wf_{model_name}_cartera_global.png"),
+    )
+    for yr in sorted(set(dates.year)):
+        mask = dates.year == yr
+        if mask.sum() == 0:
+            continue
+        plot_portfolio_boxplot(
+            weights[mask], asset_labels,
+            f"Distribución de cartera — {yr} — {model_name}",
+            os.path.join(out_dir, f"wf_{model_name}_cartera_{yr}.png"),
+        )
+
+
 def plot_metrics_table(rows_dict, title, out_path):
     df = pd.DataFrame(rows_dict).T
     numeric_cols = df.select_dtypes(include=np.number).columns
@@ -370,38 +415,6 @@ def plot_metrics_table(rows_dict, title, out_path):
     print(f"Guardado → {out_path}")
 
 
-def plot_dm_result(dm_stat, p_value, d_bar, model_name, baseline_name, out_path):
-    fig, ax = plt.subplots(figsize=(7, 3))
-    ax.axis("off")
-
-    significativo = p_value < 0.05 if not np.isnan(p_value) else False
-    mejor = model_name if d_bar > 0 else baseline_name
-
-    lines = [
-        f"Test de Diebold-Mariano (Harvey, Leybourne y Newbold, 1997)",
-        f"",
-        f"H₀: no hay diferencia de rendimiento entre los modelos",
-        f"",
-        f"  Modelo principal :  {model_name}",
-        f"  Baseline         :  {baseline_name}",
-        f"",
-        f"  Estadístico DM   :  {dm_stat:.4f}",
-        f"  p-valor (bil.)   :  {p_value:.4f}",
-        f"  Diferencia media :  {d_bar:.6f} retorno/día",
-        f"",
-        f"  {'✓ Diferencia significativa (p < 0.05)' if significativo else '✗ Diferencia NO significativa (p ≥ 0.05)'}",
-        f"  {'→ ' + mejor + ' supera estadísticamente al otro modelo' if significativo else '→ No se puede rechazar H₀'}",
-    ]
-    ax.text(0.05, 0.95, "\n".join(lines), transform=ax.transAxes,
-            fontsize=9, va="top", family="monospace",
-            bbox=dict(boxstyle="round,pad=0.6",
-                      facecolor="#d4edda" if significativo else "#fff3cd", alpha=0.9))
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Guardado → {out_path}")
-
-
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -410,10 +423,6 @@ def parse_args():
                         help="Carpeta con el .zip del modelo principal")
     parser.add_argument("--model_name",    type=str, default=None,
                         help="Nombre del modelo sin extensión (por defecto el más reciente)")
-    parser.add_argument("--baseline_dir",  type=str, default=None,
-                        help="Carpeta con el modelo baseline (para test DM)")
-    parser.add_argument("--baseline_name", type=str, default=None,
-                        help="Nombre del baseline sin extensión")
     parser.add_argument("--cache_dir",     type=str,
                         default=os.path.join(RL_DIR, "data_cache"))
     parser.add_argument("--list",          action="store_true",
@@ -444,39 +453,40 @@ def main():
 
     # Evaluación
     print("Evaluando modelo principal...")
-    lr, weights = run_model(model, data)
+    lr, weights, rebal = run_model(model, data)
 
-    # Cada decisión cubre 5 días de trading; el entorno empieza en el paso 5
-    # → fecha de la k-ésima decisión = dates[5 + k*5]
-    WINDOW = 5
-    decision_idx = np.arange(WINDOW, WINDOW + len(lr) * WINDOW, WINDOW)
+    # Cada decisión cubre rebal días → fecha de la k-ésima decisión = dates[rebal + k*rebal]
+    decision_idx = np.arange(rebal, rebal + len(lr) * rebal, rebal)
     decision_idx = decision_idx[decision_idx < T]
     n = len(decision_idx)
-    lr, weights = lr[:n], weights[:n]
+    lr, weights = lr[:n], weights[:n] if len(weights) else weights
     dates_lr = dates[decision_idx]
     vix_lr   = vix[decision_idx]
 
+    def _metrics(arr):
+        return compute_metrics(arr, freq=FREQ_ANNUAL, rebalance_freq=rebal)
+
     # ── Métricas globales ──────────────────────────────────────────────
     rows = {}
-    rows["GLOBAL 2021–2025"] = compute_metrics(lr)
+    rows["GLOBAL 2021–2025"] = _metrics(lr)
 
     # ── Por régimen VIX ───────────────────────────────────────────────
     regime = classify_regime(vix_lr)
     for reg in ["low", "moderate", "stress"]:
         mask = regime == reg
         rows[f"Régimen {reg.capitalize()} (VIX {'<20' if reg=='low' else '20-30' if reg=='moderate' else '>30'})"] \
-            = compute_metrics(lr[mask])
+            = _metrics(lr[mask])
 
     # ── Por año ───────────────────────────────────────────────────────
     years = dates_lr.year
     for yr in sorted(set(years)):
         mask = years == yr
-        rows[str(yr)] = compute_metrics(lr[mask])
+        rows[str(yr)] = _metrics(lr[mask])
 
     # ── Episodios explícitos ───────────────────────────────────────────
     for evt_name, (s, e) in EVENTS.items():
         mask = mask_event(dates_lr, s, e)
-        rows[evt_name.replace("\n", " ")] = compute_metrics(lr[mask])
+        rows[evt_name.replace("\n", " ")] = _metrics(lr[mask])
 
     df_metrics = pd.DataFrame(rows).T
     csv_path = os.path.join(out_dir, f"wf_{model_name}_metrics.csv")
@@ -495,41 +505,9 @@ def main():
         f"Métricas walk-forward 2021–2025 — {model_name}",
         os.path.join(out_dir, f"wf_{model_name}_tabla.png"),
     )
-
-    # ── Test de Diebold-Mariano ────────────────────────────────────────
-    if args.baseline_dir:
-        print("\nCargando modelo baseline para test DM...")
-        baseline, baseline_name = find_model(args.baseline_dir, args.baseline_name)
-        print("Evaluando baseline...")
-        lr_base, _ = run_model(baseline, data)
-        lr_base = lr_base[:n]   # alinear al mismo número de decisiones
-
-        dm_stat, p_value, d_bar = diebold_mariano(lr_base, lr)
-        print(f"\nDiebold-Mariano → DM={dm_stat:.4f}  p={p_value:.4f}  Δmedia={d_bar:.6f}")
-
-        plot_dm_result(
-            dm_stat, p_value, d_bar, model_name, baseline_name,
-            os.path.join(out_dir, f"wf_dm_{model_name}_vs_{baseline_name}.png"),
-        )
-
-        # tabla comparativa
-        rows_base = {"GLOBAL": compute_metrics(lr_base)}
-        for reg in ["low", "moderate", "stress"]:
-            mask = regime == reg
-            rows_base[f"Régimen {reg}"] = compute_metrics(lr_base[mask])
-        for yr in sorted(set(years)):
-            rows_base[str(yr)] = compute_metrics(lr_base[years == yr])
-        for evt_name, (s, e) in EVENTS.items():
-            mask = mask_event(dates_lr, s, e)
-            rows_base[evt_name.replace("\n", " ")] = compute_metrics(lr_base[mask])
-
-        df_comp = pd.DataFrame({
-            **{f"{k} [{model_name}]": v for k, v in rows.items()},
-            **{f"{k} [{baseline_name}]": v for k, v in rows_base.items()},
-        }).T
-        comp_csv = os.path.join(out_dir, f"wf_comparison_{model_name}_vs_{baseline_name}.csv")
-        df_comp.to_csv(comp_csv, float_format="%.4f")
-        print(f"CSV comparativo → {comp_csv}")
+    plot_portfolio_boxplots_by_year(
+        weights, dates_lr, ASSET_NAMES, model_name, out_dir,
+    )
 
 
 if __name__ == "__main__":

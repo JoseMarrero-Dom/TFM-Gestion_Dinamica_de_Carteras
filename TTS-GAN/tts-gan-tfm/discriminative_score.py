@@ -165,6 +165,12 @@ def eval_run(run_dir):
         print(f"Error cargando datos reales: {e}")
         return None
 
+    # seed también en el muestreo: si solo se fija dentro de discriminative_score(),
+    # cada lanzamiento genera ventanas fake distintas y el score varía.
+    SAMPLING_SEED = 42
+    torch.manual_seed(SAMPLING_SEED)
+    np.random.seed(SAMPLING_SEED)
+
     N = len(real)
     with torch.no_grad():
         fake = gen(torch.randn(N, latent_dim)).cpu().numpy()

@@ -19,226 +19,192 @@ import numpy as np
 from statsmodels.stats.diagnostic import acorr_ljungbox
 
    
-def visualization (ori_data, generated_data, analysis, save_name):
-    """Using PCA or tSNE for generated and original data visualization.
+def visualization(ori_data, generated_data, save_path, asset_name=""):
+    """PCA y t-SNE en una sola figura para comparar la estructura de las
+    ventanas reales y sintéticas tras reducir a 2 dimensiones.
+
+    Cada ventana (T pasos × dim canales) se aplana a un vector y luego se
+    reducen con PCA y t-SNE. Si las dos nubes de puntos se solapan, la GAN
+    captura la geometría global de las series reales aunque proyectada a
+    pocas dimensiones.
 
     Args:
-    - ori_data: original data
-    - generated_data: generated synthetic data
-    - analysis: tsne or pca
-    """  
-    # Analysis sample size (for faster computation)
-    anal_sample_no = min([1000, len(ori_data)])
-    idx = np.random.permutation(len(ori_data))[:anal_sample_no]
+        ori_data:       (N, T, dim) datos reales
+        generated_data: (N, T, dim) datos sintéticos
+        save_path:      ruta completa del PNG de salida
+        asset_name:     nombre opcional para el título
+    """
+    ori = np.asarray(ori_data)
+    gen = np.asarray(generated_data)
 
-    # Data preprocessing
-    ori_data = np.asarray(ori_data)
-    generated_data = np.asarray(generated_data)  
+    N = min(1000, len(ori), len(gen))
+    # RNG local con seed fijo: garantiza que el subconjunto de reales sea
+    # idéntico entre runs distintos (si no, t-SNE da embeddings distintos
+    # del mismo conjunto solo por el orden de entrada).
+    rng = np.random.default_rng(42)
+    idx_o = rng.permutation(len(ori))[:N]
+    idx_g = rng.permutation(len(gen))[:N]
+    ori, gen = ori[idx_o], gen[idx_g]
 
-    ori_data = ori_data[idx]
-    generated_data = generated_data[idx]
+    # aplanar cada ventana: (N, T*dim) — conserva más info que promediar canales
+    flat_ori = ori.reshape(N, -1)
+    flat_gen = gen.reshape(N, -1)
 
-    no, seq_len, dim = ori_data.shape  
+    # PCA ajustado solo sobre reales y aplicado a ambos: si la GAN está
+    # en otra región del espacio, se ve claramente
+    pca = PCA(n_components=2)
+    pca.fit(flat_ori)
+    pca_o = pca.transform(flat_ori)
+    pca_g = pca.transform(flat_gen)
 
-    for i in range(anal_sample_no):
-        if (i == 0):
-            prep_data = np.reshape(np.mean(ori_data[0,:,:], 1), [1,seq_len])
-            prep_data_hat = np.reshape(np.mean(generated_data[0,:,:],1), [1,seq_len])
-        else:
-            prep_data = np.concatenate((prep_data, 
-                                        np.reshape(np.mean(ori_data[i,:,:],1), [1,seq_len])))
-            prep_data_hat = np.concatenate((prep_data_hat, 
-                                        np.reshape(np.mean(generated_data[i,:,:],1), [1,seq_len])))
-    
-    # Visualization parameter        
-    colors = ["red" for i in range(anal_sample_no)] + ["blue" for i in range(anal_sample_no)]    
+    # t-SNE ajustado sobre la concatenación
+    tsne = TSNE(n_components=2, perplexity=min(40, max(5, N // 5)),
+                max_iter=500, init="pca", random_state=42)
+    tsne_all = tsne.fit_transform(np.concatenate([flat_ori, flat_gen], axis=0))
+    tsne_o = tsne_all[:N]
+    tsne_g = tsne_all[N:]
 
-    if analysis == 'pca':
-        # PCA Analysis
-        pca = PCA(n_components = 2)
-        pca.fit(prep_data)
-        pca_results = pca.transform(prep_data)
-        pca_hat_results = pca.transform(prep_data_hat)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    title = f"Estructura 2D — {asset_name}" if asset_name else "Estructura 2D"
+    fig.suptitle(title, fontsize=12, fontweight="bold")
 
-        # Plotting
-        f, ax = plt.subplots(1)    
-        plt.scatter(pca_results[:,0], pca_results[:,1],
-                    c = colors[:anal_sample_no], alpha = 0.2, label = "Original")
-        plt.scatter(pca_hat_results[:,0], pca_hat_results[:,1], 
-                    c = colors[anal_sample_no:], alpha = 0.2, label = "Synthetic")
+    var_exp = pca.explained_variance_ratio_
+    axes[0].scatter(pca_o[:, 0], pca_o[:, 1], c="steelblue", alpha=0.35, s=12, label="Real")
+    axes[0].scatter(pca_g[:, 0], pca_g[:, 1], c="tomato",    alpha=0.35, s=12, label="Generado")
+    axes[0].set_title(f"PCA  (var explicada: {var_exp[0]*100:.1f}% + {var_exp[1]*100:.1f}%)", fontsize=10)
+    axes[0].set_xlabel("PC1"); axes[0].set_ylabel("PC2")
+    axes[0].legend(fontsize=9)
 
-        ax.legend()  
-        plt.title('PCA plot')
-        plt.xlabel('x-pca')
-        plt.ylabel('y_pca')
-#        plt.show()
+    axes[1].scatter(tsne_o[:, 0], tsne_o[:, 1], c="steelblue", alpha=0.35, s=12, label="Real")
+    axes[1].scatter(tsne_g[:, 0], tsne_g[:, 1], c="tomato",    alpha=0.35, s=12, label="Generado")
+    axes[1].set_title("t-SNE  (perplexity adaptada)", fontsize=10)
+    axes[1].set_xlabel("t-SNE 1"); axes[1].set_ylabel("t-SNE 2")
+    axes[1].legend(fontsize=9)
 
-    elif analysis == 'tsne':
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(save_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    print(f"PCA/t-SNE guardado → {save_path}")
 
-        # Do t-SNE Analysis together       
-        prep_data_final = np.concatenate((prep_data, prep_data_hat), axis = 0)
+def JarqueBera(ori_data, generated_data, alpha=0.05):
+    """Prueba de normalidad Jarque-Bera comparada por canal.
 
-        # TSNE anlaysis
-        tsne = TSNE(n_components = 2, verbose = 1, perplexity = 40, max_iter = 300)
-        tsne_results = tsne.fit_transform(prep_data_final)
-
-        # Plotting
-        f, ax = plt.subplots(1)
-
-        plt.scatter(tsne_results[:anal_sample_no,0], tsne_results[:anal_sample_no,1], 
-                    c = colors[:anal_sample_no], alpha = 0.2, label = "Original")
-        plt.scatter(tsne_results[anal_sample_no:,0], tsne_results[anal_sample_no:,1], 
-                    c = colors[anal_sample_no:], alpha = 0.2, label = "Synthetic")
-
-        ax.legend()
-
-        plt.title('t-SNE plot')
-        plt.xlabel('x-tsne')
-        plt.ylabel('y_tsne')
-#        plt.show()    
-        
-    plt.savefig(f'./images/{save_name}.png', format="png")
-    plt.show()
-
-def JarqueBera(ori_data, generated_data):
-    """Prueba de normalidad Jarque-Bera comparando datos originales y generados.
-
-    Compara los p-values de la prueba JB aplicada a cada dimensión,
-    promediando sobre todas las features y muestras.
-
-    Args:
-        ori_data:       datos originales,   shape (N, seq_len, dim)
-        generated_data: datos sintéticos,   shape (N, seq_len, dim)
+    Para cada canal aplica JB sobre los retornos aplanados (todas las ventanas
+    concatenadas) y devuelve la fracción de canales que rechazan H0:normalidad.
+    Promediar p-valores entre canales no es válido estadísticamente; lo que
+    interesa es comparar la tasa de rechazo: un GAN bueno debe reproducir la
+    no-normalidad de los retornos financieros (Cont, 2001).
 
     Returns:
-        jb_ori_mean:  media de p-values JB sobre datos originales
-        jb_gen_mean:  media de p-values JB sobre datos generados
-        jb_diff:      diferencia absoluta entre ambas medias
+        dict con:
+          jb_stat_real / jb_stat_gen   mediana de la estadística JB
+          reject_rate_real / _gen      % canales con p<alpha
+          reject_rate_diff_pp          diferencia absoluta en puntos porcentuales
     """
     from scipy import stats
 
-    ori_data = np.asarray(ori_data)
-    generated_data = np.asarray(generated_data)
+    ori = np.asarray(ori_data)
+    gen = np.asarray(generated_data)
 
-    anal_sample_no = min(1000, len(ori_data))
-    idx = np.random.permutation(len(ori_data))[:anal_sample_no]
-    ori_data = ori_data[idx]
-    generated_data = generated_data[idx]
+    N = min(1000, len(ori))
+    idx = np.random.permutation(len(ori))[:N]
+    ori, gen = ori[idx], gen[idx]
+    _, _, dim = ori.shape
 
-    no, seq_len, dim = ori_data.shape
-
-    jb_ori_stats  = []
-    jb_gen_stats  = []
-    jb_ori_pvalues = []
-    jb_gen_pvalues = []
-
+    stats_ori, stats_gen = [], []
+    pvals_ori, pvals_gen = [], []
     for d in range(dim):
-        ori_flat = ori_data[:, :, d].flatten()
-        gen_flat = generated_data[:, :, d].flatten()
+        s_o, p_o = stats.jarque_bera(ori[:, :, d].flatten())
+        s_g, p_g = stats.jarque_bera(gen[:, :, d].flatten())
+        stats_ori.append(s_o); stats_gen.append(s_g)
+        pvals_ori.append(p_o); pvals_gen.append(p_g)
 
-        stat_ori, p_ori = stats.jarque_bera(ori_flat)
-        stat_gen, p_gen = stats.jarque_bera(gen_flat)
-
-        jb_ori_stats.append(stat_ori)
-        jb_gen_stats.append(stat_gen)
-        jb_ori_pvalues.append(p_ori)
-        jb_gen_pvalues.append(p_gen)
-
-    jb_ori_stat  = np.mean(jb_ori_stats)
-    jb_gen_stat  = np.mean(jb_gen_stats)
-    jb_ori_pval  = np.mean(jb_ori_pvalues)
-    jb_gen_pval  = np.mean(jb_gen_pvalues)
-    jb_stat_diff = np.abs(jb_ori_stat - jb_gen_stat)
-    jb_pval_diff = np.abs(jb_ori_pval  - jb_gen_pval)
-
-    return jb_ori_stat, jb_gen_stat, jb_stat_diff, jb_ori_pval, jb_gen_pval, jb_pval_diff
+    reject_real = float(np.mean(np.array(pvals_ori) < alpha))
+    reject_gen  = float(np.mean(np.array(pvals_gen) < alpha))
+    return {
+        "jb_stat_real":   float(np.median(stats_ori)),
+        "jb_stat_gen":    float(np.median(stats_gen)),
+        "reject_real":    reject_real,
+        "reject_gen":     reject_gen,
+        "reject_diff_pp": abs(reject_real - reject_gen) * 100.0,
+    }
 
 
-def LjungBox(ori_data, generated_data, lags=10):
-    """Prueba de autocorrelación Ljung-Box comparando datos originales y generados.
+def LjungBox(ori_data, generated_data, lags=10, alpha=0.05):
+    """Ljung-Box sobre r²: detección de volatility clustering (efecto GARCH).
 
-    Evalúa si las series temporales presentan autocorrelación significativa.
-    Un buen modelo generativo debería reproducir la estructura de autocorrelación
-    del proceso original.
-
-    Args:
-        ori_data:       datos originales,   shape (N, seq_len, dim)
-        generated_data: datos sintéticos,   shape (N, seq_len, dim)
-        lags:           número de retardos a evaluar (default: 10)
+    Promediar p-valores entre ventanas no es válido. Lo que interesa es la
+    tasa de ventanas con autocorrelación significativa en r² — los retornos
+    financieros la presentan casi siempre (Cont, 2001). Se calcula también
+    Ljung-Box sobre retornos lineales: en mercados eficientes debe ser no
+    significativo y un GAN bueno también.
 
     Returns:
-        lb_ori_mean:  media de p-values LB sobre datos originales
-        lb_gen_mean:  media de p-values LB sobre datos generados
-        lb_diff:      diferencia absoluta entre ambas medias
+        dict con tasas de rechazo (en r² y en r) para real y generado, y
+        diferencia en puntos porcentuales.
     """
+    ori = np.asarray(ori_data)
+    gen = np.asarray(generated_data)
 
-    ori_data = np.asarray(ori_data)
-    generated_data = np.asarray(generated_data)
+    N = min(1000, len(ori))
+    idx = np.random.permutation(len(ori))[:N]
+    ori, gen = ori[idx], gen[idx]
+    no, seq_len, dim = ori.shape
+    eff_lags = min(lags, seq_len - 1)
 
-    anal_sample_no = min(1000, len(ori_data))
-    idx = np.random.permutation(len(ori_data))[:anal_sample_no]
-    ori_data = ori_data[idx]
-    generated_data = generated_data[idx]
-
-    no, seq_len, dim = ori_data.shape
-
-    lb_ori_pvalues = []
-    lb_gen_pvalues = []
-
-    effective_lags = min(lags, seq_len - 1)
-
+    rej_sq_real = rej_sq_gen = 0
+    rej_ln_real = rej_ln_gen = 0
+    total = no * dim
     for i in range(no):
         for d in range(dim):
-            ori_series = ori_data[i, :, d]
-            gen_series = generated_data[i, :, d]
+            r_o = ori[i, :, d]
+            r_g = gen[i, :, d]
+            p_sq_o = acorr_ljungbox(r_o ** 2, lags=[eff_lags], return_df=True)['lb_pvalue'].values[-1]
+            p_sq_g = acorr_ljungbox(r_g ** 2, lags=[eff_lags], return_df=True)['lb_pvalue'].values[-1]
+            p_ln_o = acorr_ljungbox(r_o,       lags=[eff_lags], return_df=True)['lb_pvalue'].values[-1]
+            p_ln_g = acorr_ljungbox(r_g,       lags=[eff_lags], return_df=True)['lb_pvalue'].values[-1]
+            rej_sq_real += (p_sq_o < alpha); rej_sq_gen += (p_sq_g < alpha)
+            rej_ln_real += (p_ln_o < alpha); rej_ln_gen += (p_ln_g < alpha)
 
-            lb_ori = acorr_ljungbox(ori_series ** 2, lags=[effective_lags], return_df=True)
-            lb_gen = acorr_ljungbox(gen_series ** 2, lags=[effective_lags], return_df=True)
-
-            lb_ori_pvalues.append(lb_ori['lb_pvalue'].values[-1])
-            lb_gen_pvalues.append(lb_gen['lb_pvalue'].values[-1])
-
-    lb_ori_mean = np.mean(lb_ori_pvalues)
-    lb_gen_mean = np.mean(lb_gen_pvalues)
-    lb_diff     = np.abs(lb_ori_mean - lb_gen_mean)
-
-    return lb_ori_mean, lb_gen_mean, lb_diff
+    return {
+        "garch_real":      rej_sq_real / total,
+        "garch_gen":       rej_sq_gen  / total,
+        "garch_diff_pp":   abs(rej_sq_real - rej_sq_gen) / total * 100.0,
+        "linear_ac_real":  rej_ln_real / total,
+        "linear_ac_gen":   rej_ln_gen  / total,
+        "linear_ac_diff_pp": abs(rej_ln_real - rej_ln_gen) / total * 100.0,
+    }
 
 
 def FrobeniusDistance(ori_data, generated_data):
-    """Distancia de Frobenius entre las matrices de covarianza de los datos
-    originales y generados.
+    """Distancia de Frobenius relativa entre matrices de correlación.
 
-    Mide qué tan bien el modelo generativo reproduce la estructura de
-    covarianza (correlaciones lineales entre features) del proceso real.
-
-    Args:
-        ori_data:       datos originales,   shape (N, seq_len, dim)
-        generated_data: datos sintéticos,   shape (N, seq_len, dim)
+    El valor absoluto depende del número de canales (la matriz crece con dim),
+    así que normalizamos por ||C_real||_F para tener un error relativo
+    comparable entre experimentos.
 
     Returns:
-        frob_dist: distancia de Frobenius entre matrices de covarianza
+        dict con frob_abs (||ΔC||_F) y frob_rel (||ΔC||_F / ||C_real||_F).
     """
-    ori_data = np.asarray(ori_data)
-    generated_data = np.asarray(generated_data)
+    ori = np.asarray(ori_data)
+    gen = np.asarray(generated_data)
 
-    anal_sample_no = min(1000, len(ori_data))
-    idx = np.random.permutation(len(ori_data))[:anal_sample_no]
-    ori_data = ori_data[idx]
-    generated_data = generated_data[idx]
+    N = min(1000, len(ori))
+    idx = np.random.permutation(len(ori))[:N]
+    ori, gen = ori[idx], gen[idx]
+    _, _, dim = ori.shape
 
-    no, seq_len, dim = ori_data.shape
+    corr_o = np.corrcoef(ori.reshape(-1, dim), rowvar=False)
+    corr_g = np.corrcoef(gen.reshape(-1, dim), rowvar=False)
 
-    ori_flat = ori_data.reshape(-1, dim)
-    gen_flat = generated_data.reshape(-1, dim)
+    # con dim=1 corrcoef devuelve un escalar; lo convertimos en matriz 1x1
+    if np.ndim(corr_o) == 0:
+        corr_o = np.array([[corr_o]]); corr_g = np.array([[corr_g]])
 
-    corr_ori = np.corrcoef(ori_flat, rowvar=False)   # (dim, dim)
-    corr_gen = np.corrcoef(gen_flat, rowvar=False)   # (dim, dim)
-
-    diff = corr_ori - corr_gen
-    frob_dist = np.linalg.norm(diff, ord='fro')
-
-    return frob_dist
+    frob_abs  = float(np.linalg.norm(corr_o - corr_g, ord='fro'))
+    denom     = float(np.linalg.norm(corr_o, ord='fro'))
+    frob_rel  = frob_abs / denom if denom > 0 else float("inf")
+    return {"frob_abs": frob_abs, "frob_rel": frob_rel}
 
 
 def plot_asset_dashboard(ori_data, generated_data, metrics, asset_name, save_path):
@@ -352,20 +318,32 @@ def plot_asset_dashboard(ori_data, generated_data, metrics, asset_name, save_pat
     ax_txt = fig.add_subplot(total_rows, 1, total_rows)
     ax_txt.axis("off")
 
-    jb_pass   = metrics["jb_gen_pval"] < 0.05
-    lb_pass   = metrics["lb_gen"] < 0.05
-    frob_pass = 0.87 <= metrics["frob"] <= 1.31
+    jb       = metrics["jb"]
+    lb       = metrics["lb"]
+    frob     = metrics["frob"]
+    moments  = metrics["moments"]
+    acf_lin  = metrics["acf_linear"]
+
+    # criterios justificados por la literatura de hechos estilizados (Cont, 2001):
+    #   - los retornos rechazan normalidad casi siempre → tasas similares
+    #   - presentan volatility clustering (Ljung-Box r² significativo)
+    #   - ACF lineal ≈ 0 (mercado eficiente)
+    #   - correlaciones contemporáneas estables → Frobenius relativo pequeño
+    jb_pass   = jb["reject_diff_pp"] < 10.0
+    lb_pass   = lb["garch_diff_pp"]  < 15.0 and lb["garch_gen"] > 0.5
+    frob_pass = frob["frob_rel"] < 0.30
+    acf_pass  = acf_lin["acf_diff_med"] < 0.05
+    kurt_pass = moments["kurt_mean_rel_err"] < 0.25
 
     def ok(v):
         return "✓ OK" if v else "✗ FALLO"
 
     lines = [
-        f"Jarque-Bera  estadístico → Real: {metrics['jb_ori_stat']:.1f}  |  "
-        f"Generado: {metrics['jb_gen_stat']:.1f}  |  Ratio: {metrics['jb_ratio']:.2f}x   {ok(jb_pass)}",
-        f"Jarque-Bera  p-valor     → Real: {metrics['jb_ori_pval']:.2e}  |  Generado: {metrics['jb_gen_pval']:.2e}",
-        f"Ljung-Box²   p-valor     → Real: {metrics['lb_ori']:.4f}  |  "
-        f"Generado: {metrics['lb_gen']:.4f}  |  Diff: {metrics['lb_diff']:.4f}   {ok(lb_pass)}",
-        f"Frobenius    distancia   → {metrics['frob']:.4f}   {ok(frob_pass)}  (criterio 0.87–1.31)",
+        f"Jarque-Bera   → rechazo H0 (normalidad)  Real: {jb['reject_real']*100:5.1f}%  Gen: {jb['reject_gen']*100:5.1f}%  Δ={jb['reject_diff_pp']:.1f}pp   {ok(jb_pass)}  (Δ<10pp)",
+        f"Ljung-Box r²  → GARCH presente            Real: {lb['garch_real']*100:5.1f}%  Gen: {lb['garch_gen']*100:5.1f}%  Δ={lb['garch_diff_pp']:.1f}pp   {ok(lb_pass)}  (Δ<15pp y gen>50%)",
+        f"ACF lineal    → mediana |ACF(1)|          Real: {acf_lin['acf_real_med']:.3f}    Gen: {acf_lin['acf_gen_med']:.3f}    Δ={acf_lin['acf_diff_med']:.3f}   {ok(acf_pass)}  (Δ<0.05)",
+        f"Frobenius     → ||ΔC||_F relativo:        {frob['frob_rel']:.3f}   {ok(frob_pass)}  (<0.30)",
+        f"Momentos      → skew |Δ|={moments['skew_mean_abs_diff']:.3f}   kurt err_rel={moments['kurt_mean_rel_err']:.3f}   {ok(kurt_pass)}  (kurt<0.25)",
     ]
     ax_txt.text(0.5, 0.5, "\n".join(lines), transform=ax_txt.transAxes,
                 fontsize=9, va="center", ha="center",
@@ -379,83 +357,118 @@ def plot_asset_dashboard(ori_data, generated_data, metrics, asset_name, save_pat
 
 
 def MomentsComparison(ori_data, generated_data):
-    """Compara media, std, skewness y kurtosis entre datos reales y sinteticos.
+    """Momentos por canal: media, std, skewness, kurtosis.
 
-    Aplana todas las muestras y canales y calcula los cuatro momentos.
-    El error relativo indica cuanto se aleja el GAN de cada momento real.
-
-    Args:
-        ori_data:       (N, T, dim)
-        generated_data: (N, T, dim)
+    Aplanar todos los canales mezcla activos con escalas y signos distintos
+    (logret vs ranges) y oculta dónde falla el GAN. Como los datos vienen
+    z-score-normalizados, media≈0 y std≈1 en real por construcción, así que
+    el peso real lo cargan skewness y kurtosis (colas).
 
     Returns:
-        dict con momentos reales, generados y errores relativos (abs).
+        dict con momentos por canal y diferencia absoluta promedio en skew/kurt.
     """
     from scipy import stats as sp_stats
 
-    ori = np.asarray(ori_data).flatten()
-    gen = np.asarray(generated_data).flatten()
+    ori = np.asarray(ori_data)
+    gen = np.asarray(generated_data)
+    _, _, dim = ori.shape
 
-    def _moments(x):
-        return {
-            "mean":     float(np.mean(x)),
-            "std":      float(np.std(x)),
-            "skewness": float(sp_stats.skew(x)),
-            "kurtosis": float(sp_stats.kurtosis(x)),
-        }
+    per_channel = []
+    for d in range(dim):
+        o = ori[:, :, d].flatten()
+        g = gen[:, :, d].flatten()
+        per_channel.append({
+            "mean_real":  float(np.mean(o)),     "mean_gen":  float(np.mean(g)),
+            "std_real":   float(np.std(o)),      "std_gen":   float(np.std(g)),
+            "skew_real":  float(sp_stats.skew(o)),     "skew_gen":  float(sp_stats.skew(g)),
+            "kurt_real":  float(sp_stats.kurtosis(o)), "kurt_gen":  float(sp_stats.kurtosis(g)),
+        })
 
-    m_ori = _moments(ori)
-    m_gen = _moments(gen)
+    skew_diff = np.mean([abs(c["skew_real"] - c["skew_gen"]) for c in per_channel])
+    # kurt: usamos error relativo porque suele variar mucho entre canales
+    def _rel(a, b):
+        denom = abs(a) if abs(a) > 1e-6 else 1.0
+        return abs(a - b) / denom
+    kurt_rel_err = np.mean([_rel(c["kurt_real"], c["kurt_gen"]) for c in per_channel])
 
-    err = {}
-    for k in m_ori:
-        denom = abs(m_ori[k]) if m_ori[k] != 0 else 1.0
-        err[k] = abs(m_ori[k] - m_gen[k]) / denom
-
-    print("Comparacion de momentos:")
-    for k in m_ori:
-        print(f"  {k:<10}  Real={m_ori[k]:+.4f}  Gen={m_gen[k]:+.4f}  err_rel={err[k]:.4f}")
-
-    return {"real": m_ori, "gen": m_gen, "rel_error": err}
+    return {
+        "per_channel": per_channel,
+        "skew_mean_abs_diff": float(skew_diff),
+        "kurt_mean_rel_err":  float(kurt_rel_err),
+    }
 
 
-def VaRCVaR(ori_data, generated_data, levels=(0.95, 0.99)):
-    """Compara VaR y CVaR entre datos reales y sinteticos a distintos niveles.
+def VaRCVaR(ori_data, generated_data, levels=(0.95, 0.99), logret_channels=None):
+    """VaR y CVaR por canal de logret a 95% y 99%.
 
-    VaR(alpha)  = cuantil (1-alpha) de la distribucion de retornos
-                  (perdida maxima con probabilidad alpha).
-    CVaR(alpha) = media de retornos por debajo del VaR (expected shortfall).
-
-    Un GAN bueno debe reproducir estas colas: si falla aqui, los datos sinteticos
-    de regimen stress son inútiles para el agente de RL.
-
-    Args:
-        ori_data:       (N, T, dim)
-        generated_data: (N, T, dim)
-        levels:         niveles de confianza, por defecto (0.95, 0.99)
+    Aplanar todos los canales mezcla logrets con ranges OC/HL (que viven en
+    escalas y signos distintos) y rompe la interpretación financiera de la
+    cola. Si se pasa logret_channels=lista_índices, solo se evalúan esos
+    canales (típicamente los de retornos), si no, se evalúan todos.
 
     Returns:
-        dict con VaR y CVaR para cada nivel, en reales y generados.
+        dict con error relativo promedio (sobre canales) en VaR y CVaR a 95%.
     """
-    ori = np.asarray(ori_data).flatten()
-    gen = np.asarray(generated_data).flatten()
+    ori = np.asarray(ori_data)
+    gen = np.asarray(generated_data)
+    _, _, dim = ori.shape
+    chans = logret_channels if logret_channels is not None else list(range(dim))
 
-    results = {}
-    print("VaR / CVaR:")
+    per_level = {}
     for alpha in levels:
         q = 1.0 - alpha
-        var_ori = float(np.quantile(ori, q))
-        var_gen = float(np.quantile(gen, q))
-        cvar_ori = float(ori[ori <= var_ori].mean())
-        cvar_gen = float(gen[gen <= var_gen].mean())
-
-        results[alpha] = {
-            "VaR_real":  var_ori,  "VaR_gen":  var_gen,
-            "CVaR_real": cvar_ori, "CVaR_gen": cvar_gen,
-            "VaR_diff":  abs(var_ori  - var_gen),
-            "CVaR_diff": abs(cvar_ori - cvar_gen),
+        var_rel_errs, cvar_rel_errs = [], []
+        per_chan = []
+        for d in chans:
+            o = ori[:, :, d].flatten()
+            g = gen[:, :, d].flatten()
+            var_o = float(np.quantile(o, q));  var_g = float(np.quantile(g, q))
+            tail_o = o[o <= var_o];            tail_g = g[g <= var_g]
+            cvar_o = float(tail_o.mean()) if len(tail_o) else var_o
+            cvar_g = float(tail_g.mean()) if len(tail_g) else var_g
+            denom_v = abs(var_o)  if abs(var_o)  > 1e-6 else 1.0
+            denom_c = abs(cvar_o) if abs(cvar_o) > 1e-6 else 1.0
+            var_rel_errs.append(abs(var_o - var_g) / denom_v)
+            cvar_rel_errs.append(abs(cvar_o - cvar_g) / denom_c)
+            per_chan.append({
+                "channel": d,
+                "VaR_real": var_o,  "VaR_gen": var_g,
+                "CVaR_real": cvar_o, "CVaR_gen": cvar_g,
+            })
+        per_level[alpha] = {
+            "per_channel":      per_chan,
+            "var_mean_rel_err": float(np.mean(var_rel_errs)),
+            "cvar_mean_rel_err":float(np.mean(cvar_rel_errs)),
         }
-        print(f"  {int(alpha*100)}%  VaR  → Real={var_ori:+.4f}  Gen={var_gen:+.4f}  |diff|={abs(var_ori-var_gen):.4f}")
-        print(f"  {int(alpha*100)}%  CVaR → Real={cvar_ori:+.4f}  Gen={cvar_gen:+.4f}  |diff|={abs(cvar_ori-cvar_gen):.4f}")
+    return per_level
 
-    return results
+
+def ACFLinear(ori_data, generated_data, lag=1):
+    """ACF de retornos lineales a lag dado.
+
+    Por hipótesis de mercado eficiente, la ACF de los retornos (no del
+    cuadrado) debe estar cerca de 0. Si el GAN produce ACF lineal alta,
+    está introduciendo previsibilidad espuria. Evaluado por canal.
+
+    Returns:
+        dict con acf real/gen medianos en valor absoluto y diferencia.
+    """
+    from statsmodels.tsa.stattools import acf
+
+    ori = np.asarray(ori_data)
+    gen = np.asarray(generated_data)
+    _, _, dim = ori.shape
+
+    acfs_real, acfs_gen = [], []
+    for d in range(dim):
+        a_o = acf(ori[:, :, d].flatten(), nlags=lag, fft=True)[lag]
+        a_g = acf(gen[:, :, d].flatten(), nlags=lag, fft=True)[lag]
+        acfs_real.append(abs(a_o))
+        acfs_gen.append(abs(a_g))
+
+    return {
+        "acf_lag":      lag,
+        "acf_real_med": float(np.median(acfs_real)),
+        "acf_gen_med":  float(np.median(acfs_gen)),
+        "acf_diff_med": float(abs(np.median(acfs_real) - np.median(acfs_gen))),
+    }
