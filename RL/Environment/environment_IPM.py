@@ -31,6 +31,8 @@ class PortfolioEnv(gym.Env):
         self.debug = debug
         self.debug_every = debug_every
         self._debug_buf = []
+        self._episode_idx = 0
+        self._start_order = np.arange(0)
         self.reward_scale = reward_scale
         self.current_step = 0
         self.num_assets = 6  # 6 assets + cash
@@ -63,13 +65,27 @@ class PortfolioEnv(gym.Env):
             )
         self._debug_buf = []
         if self.episode_days is not None:
-            max_start = len(self.data) - self.episode_days - 1
-            start = int(self.np_random.integers(self.window_size, max(self.window_size + 1, max_start)))
-            self.current_step = start
-            self.episode_end = start + self.episode_days
+            low  = self.window_size
+            high = len(self.data) - self.episode_days - 1
+            if high < low:
+                start = low
+            else:
+                n_starts = high - low + 1
+                epoch    = self._episode_idx // n_starts
+                pos      = self._episode_idx % n_starts
+
+                if pos == 0:
+                    rng = np.random.default_rng(seed=epoch)
+                    self._start_order = rng.permutation(n_starts)
+
+                start = low + self._start_order[pos]
+
+            self._episode_idx  += 1
+            self.current_step   = start
+            self.episode_end    = min(start + self.episode_days, len(self.data))
         else:
             self.current_step = self.window_size
-            self.episode_end = len(self.data)
+            self.episode_end  = len(self.data)
         # warm-up del IPM: corre los días anteriores al inicio para que su estado sea coherente
         if self.ipm_module is not None:
             self.ipm_module.reset()
@@ -85,7 +101,7 @@ class PortfolioEnv(gym.Env):
         turnover = float(np.abs(w - self.weights).sum())
         total_log_ret = 0.0
 
-        # avanza rebalance_freq días con drift natural; el agente no toca nada
+        # avanza rebalance_freq días con drift natural, el agente no toca nada
         for _ in range(self.rebalance_freq):
             if self.current_step >= len(self.data):
                 break
@@ -113,7 +129,7 @@ class PortfolioEnv(gym.Env):
         return obs, reward, terminated, False, {"portfolio_log_ret": total_log_ret}
     
     def _action_to_weights(self, action):
-        x = np.maximum(action, 0.0)   # ReLU: negativos → 0 exacto
+        x = np.maximum(action, 0.0)   # ReLU: negativos = 0 exacto
         s = x.sum()
         if s < 1e-8:                  # si todo es 0, todo a cash
             w = np.zeros_like(x)

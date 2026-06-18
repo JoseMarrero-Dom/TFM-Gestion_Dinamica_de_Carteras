@@ -11,6 +11,7 @@ Flujo:
 
 import os
 import sys
+import random
 import numpy as np
 import pandas as pd
 import torch
@@ -34,10 +35,19 @@ from IPM.ipm import IPMModule
 ALL_ASSETS  = list(DEFAULT_TICKERS.keys())   # orden fijo del dataLoader
 N_ASSETS    = len(ALL_ASSETS)                # 6
 VIX_STRESS  = 25.0   # valor VIX representativo para las ventanas sintéticas
-N_SYNTHETIC = 2000     # ventanas sintéticas a generar por modelo
+N_SYNTHETIC = 20     # ventanas sintéticas a generar por modelo # 20
+SEED        = 42
 
 
 # ── utilidades GAN ────────────────────────────────────────────────────────────
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def _infer_gen_config(state_dict):
     channels   = state_dict["deconv.0.weight"].shape[0]
@@ -65,7 +75,9 @@ def _load_generator(ckpt_path):
 
 def _generate_windows(gen, latent_dim, n):
     """Devuelve (n, seq_len, channels) en espacio normalizado z-score."""
-    z = torch.randn(n, latent_dim)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(SEED)
+    z = torch.randn(n, latent_dim, generator=generator)
     with torch.no_grad():
         out = gen(z).cpu().numpy()          # (n, C, 1, T)
     return np.transpose(out.squeeze(2), (0, 2, 1))  # (n, T, C)
@@ -192,11 +204,33 @@ def inject_single_asset(stress_windows_real, gen_windows_norm, asset_name, mean,
     out[:N, :, col_start:col_end] = gen_denorm[:N]
     return out[:N]
 
+def build_fully_synthetic_windows(gen_windows_by_asset, mean, std, seq_len, n_use):
+    """
+    gen_windows_by_asset: dict {asset_name: (N, T, 3)} en espacio normalizado
+    Devuelve: (n_use * seq_len, 19) con todos los canales sintéticos
+    """
+    full_windows = np.zeros((n_use, seq_len, 18), dtype=np.float32)
+
+    for asset_name, gen_windows in gen_windows_by_asset.items():
+        asset_idx = ALL_ASSETS.index(asset_name)
+        col_start = asset_idx * 3
+        col_end   = col_start + 3
+
+        asset_mean = mean[col_start:col_end]
+        asset_std  = std[col_start:col_end]
+        gen_denorm = denormalize(gen_windows[:n_use], asset_mean, asset_std)
+
+        full_windows[:, :, col_start:col_end] = gen_denorm
+
+    flat = np.clip(full_windows.reshape(-1, 18), -0.30, 0.30)
+    vix_col = np.full((len(flat), 1), VIX_STRESS, dtype=np.float32)
+    return np.concatenate([flat, vix_col], axis=1)
+
 
 # ── entrenamiento PPO ──────────────────────────────────────────────────────────
 from typing import Callable
 
-def linear_schedule(initial_value: float, floor_value: float = 1e-5) -> Callable[[float], float]:
+def linear_schedule(initial_value: float, floor_value: float = 1e-4) -> Callable[[float], float]:
     """
     Planificador de tasa de aprendizaje lineal.
     
@@ -214,8 +248,8 @@ def linear_schedule(initial_value: float, floor_value: float = 1e-5) -> Callable
 
 def train_and_eval(real_data, test_data, ipm, out_dir,
                    synthetic_data=None,
-                   timesteps_real=1_500_000,
-                   timesteps_finetune=0):
+                   timesteps_real=0,
+                   timesteps_finetune=5_000_000):
     """
     Fase 1: entrena PPO solo con datos reales.
     Fase 2: si hay sintéticos, continúa entrenando con reales + sintéticos
@@ -230,14 +264,14 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     env_wrapped = DummyVecEnv([lambda: env_real])
     env_normalized = VecNormalize(env_wrapped, norm_obs=True, norm_reward=True, clip_obs=10.0)
     
-    agent     = PPOAgent(env_normalized, seed=42, learning_rate=linear_schedule(3e-4))
+    agent     = PPOAgent(env_normalized, seed=SEED, learning_rate=3e-4)
     agent.train(total_timesteps=timesteps_real)
     agent.save(os.path.join(out_dir, "ppo_baseline"))
     # Guardamos las estadísticas de normalización de la Fase 1
     env_normalized.save(os.path.join(out_dir, "vec_normalize_baseline.pkl"))
 
     # EVALUACIÓN FASE 1: Creamos el entorno de test normalizado con datos de Fase 1
-    raw_env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=None)
+    raw_env_test = PortfolioEnv(test_data, ipm_module=ipm, episode_weeks=52)
     env_test_vec = DummyVecEnv([lambda: raw_env_test])
     env_test_normalized = VecNormalize(env_test_vec, norm_obs=True, norm_reward=True, clip_obs=10.0)
     
@@ -247,7 +281,7 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     env_test_normalized.norm_reward = False
 
     metrics_base = evaluate_and_plot(
-        agent.model, env_test_normalized, # <── Pasamos el entorno vectorizado y normalizado
+        agent.model, env_test_normalized, # Pasamos el entorno vectorizado y normalizado
         out_path=os.path.join(out_dir, "eval_baseline.png")
     )
     print(f"Baseline  → Sharpe: {metrics_base['sharpe']:.3f}  "
@@ -267,7 +301,7 @@ def train_and_eval(real_data, test_data, ipm, out_dir,
     env_wrapped_aug = DummyVecEnv([lambda: env_aug])
     env_normalized_aug = VecNormalize(env_wrapped_aug, norm_obs=True, norm_reward=True, clip_obs=10.0)
     
-    # CRÍTICO: Transferir la experiencia de normalización de la Fase 1 a la Fase 2
+    # Transferir la experiencia de normalización de la Fase 1 a la Fase 2
     env_normalized_aug.obs_rms = env_normalized.obs_rms
     
     agent.model.set_env(env_normalized_aug)
@@ -345,6 +379,8 @@ def _action_to_weights(action):
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    set_seed(SEED)
+
     out_dir = os.path.join(RL_DIR, "results_gan_augmented")
     os.makedirs(out_dir, exist_ok=True)
 
