@@ -79,6 +79,23 @@ def find_model(model_dir, model_name=None):
     return PPO.load(path, device="cpu"), name
 
 
+def find_vec_normalize(model_dir, model_name):
+    suffix = model_name.removeprefix("ppo_")
+    candidates = [
+        os.path.join(model_dir, f"vec_normalize_{suffix}.pkl"),
+        os.path.join(model_dir, f"vec_normalize_{model_name}.pkl"),
+        os.path.join(model_dir, "vec_normalize.pkl"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            print(f"VecNormalize cargado: {path}")
+            return path
+    raise FileNotFoundError(
+        f"No se encontró un archivo VecNormalize en {model_dir}. "
+        f"Probados: {candidates}"
+    )
+
+
 # ── datos ──────────────────────────────────────────────────────────────────────
 
 def load_test_data(cache_dir):
@@ -124,7 +141,7 @@ def _w(action):
     return x / s
 
 
-def run_model(model, data, training_env=None):
+def run_model(model, data, vecnormalize_path=None, training_env=None):
     """Devuelve arrays (log_returns, weights, rebalance_freq) para todo el periodo.
 
     Args:
@@ -142,7 +159,9 @@ def run_model(model, data, training_env=None):
         env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
         env.obs_rms = training_env.obs_rms
     else:
-        env = VecNormalize.load("../RL/results_gan_augmented/vec_normalize_baseline.pkl", env)
+        if vecnormalize_path is None:
+            raise ValueError("Debes proporcionar vecnormalize_path cuando training_env is None.")
+        env = VecNormalize.load(vecnormalize_path, env)
 
     env.training    = False
     env.norm_reward = False
@@ -187,7 +206,7 @@ def compute_metrics(lr, freq=FREQ_ANNUAL, rebalance_freq=5, var_conf=0.95):
         Es un ratio; se anualiza por convención académica aunque el periodo
         sea más corto que un año.
       - Sortino (Sortino & Price, 1994): downside deviation calculada con
-        sqrt(mean(min(r,0)^2)) sobre TODO el periodo, no solo los negativos
+        sqrt(mean(min(r,0)^2)) sobre todo el periodo, no solo los negativos
         (la versión "solo negativos" sobreestima sistemáticamente el ratio).
       - ret_anualizado y vol_anualizada: solo tienen sentido cuando el
         periodo evaluado cubre al menos un año hábil. Para subperiodos más
@@ -325,7 +344,7 @@ def plot_portfolio_boxplot(weights, asset_labels, title, out_path):
     """
     fig, ax = plt.subplots(figsize=(max(8, 1.2 * len(asset_labels) + 1), 5))
     cols = [weights[:, i] for i in range(weights.shape[1])]
-    bp = ax.boxplot(cols, labels=asset_labels, patch_artist=True, showmeans=True,
+    bp = ax.boxplot(cols, tick_labels=asset_labels, patch_artist=True, showmeans=True,
                     meanprops=dict(marker="D", markerfacecolor="black",
                                    markeredgecolor="black", markersize=4),
                     medianprops=dict(color="black", linewidth=1.2),
@@ -341,11 +360,15 @@ def plot_portfolio_boxplot(weights, asset_labels, title, out_path):
     ax.set_title(title, fontsize=11, fontweight="bold")
     ax.grid(axis="y", alpha=0.3)
 
+    ax.tick_params(axis="x", labelsize=8, pad=6)
     for i, col in enumerate(cols, start=1):
-        med = np.median(col); mean = np.mean(col)
-        ax.text(i, 1.0, f"med={med:.2f}\nμ={mean:.2f}",
+        med = np.median(col)
+        mean = np.mean(col)
+        ax.text(i, -0.09, f"Mediana={med:.2f}\nMedia={mean:.2f}",
+                transform=ax.get_xaxis_transform(),
                 ha="center", va="top", fontsize=7, color="dimgray")
 
+    plt.subplots_adjust(bottom=0.30)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -444,6 +467,7 @@ def main():
 
     # Cargar modelo principal
     model, model_name = find_model(args.model_dir, args.model_name)
+    vecnormalize_path = find_vec_normalize(args.model_dir, model_name)
 
     # Datos de test
     print("Cargando datos 2021+...")
@@ -453,7 +477,7 @@ def main():
 
     # Evaluación
     print("Evaluando modelo principal...")
-    lr, weights, rebal = run_model(model, data)
+    lr, weights, rebal = run_model(model, data, vecnormalize_path=vecnormalize_path)
 
     # Cada decisión cubre rebal días → fecha de la k-ésima decisión = dates[rebal + k*rebal]
     decision_idx = np.arange(rebal, rebal + len(lr) * rebal, rebal)
