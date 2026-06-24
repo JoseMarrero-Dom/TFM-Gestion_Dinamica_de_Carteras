@@ -10,19 +10,25 @@ Este proyecto entrena una Red Generativa Adversarial (GAN) basada en Transformer
 TTS-GAN/
 ├── requirements.txt                  # Dependencias Python del proyecto
 └── tts-gan-tfm/
-    ├── Train_SP500.py                # Punto de entrada principal — lanza el entrenamiento
+    ├── Train_Portfolio.py            # Punto de entrada principal — GAN conjunta de los 6 activos
+    ├── Train_SP500.py                # Lanzador por activo individual (actualmente UST10Y)
     ├── train_GAN.py                  # Lógica completa del bucle de entrenamiento
     ├── GANModels.py                  # Arquitecturas del Generador y Discriminador
-    ├── dataLoader.py                 # Carga y preprocesa datos financieros (SP500, etc.)
-    ├── dataLoaderUniMB.py            # DataLoader alternativo para dataset UniMiB (acelerómetros)
+    ├── dataLoader.py                 # Carga y preprocesa datos financieros (yfinance + caché)
     ├── cfg.py                        # Todos los argumentos y configuración del experimento
     ├── functions.py                  # Funciones de entrenamiento por epoch (train, train_d)
     ├── adamw.py                      # Implementación manual del optimizador AdamW
-    ├── eval.py                       # Script de evaluación: genera datos sintéticos y visualiza
+    ├── eval.py                       # Evaluación: genera datos sintéticos y visualiza (PCA/t-SNE)
+    ├── discriminative_score.py       # Discriminative score (clasificador real vs. sintético)
+    ├── grid.py                       # Búsqueda en rejilla de hiperparámetros
     ├── visualizationMetrics.py       # PCA y t-SNE para comparar datos reales vs sintéticos
-    ├── data_cache/                   # CSVs cacheados de precios descargados de Yahoo Finance
-    │   ├── portfolio_prices_*.csv
-    │   └── portfolio_vix_*.csv
+    ├── data_cache/                   # CSVs cacheados descargados de Yahoo Finance
+    │   ├── portfolio_prices_*.csv    # Precios de cierre ajustados (6 activos)
+    │   ├── portfolio_open_*.csv      # Apertura (canal intradía)
+    │   ├── portfolio_high_*.csv      # Máximo (canal intradía)
+    │   ├── portfolio_low_*.csv       # Mínimo (canal intradía)
+    │   └── portfolio_vix_*.csv       # Nivel diario del VIX
+    ├── images/                       # Dashboards PCA / t-SNE generados por eval.py
     └── utils/
         ├── __init__.py
         ├── utils.py                  # Logging, guardado de checkpoints, estadísticas
@@ -38,20 +44,37 @@ TTS-GAN/
 
 ## Qué hace cada fichero
 
-### `Train_SP500.py` — Punto de entrada
+### `Train_Portfolio.py` — Punto de entrada principal
 
-Es el script que el usuario ejecuta. No contiene lógica propia: construye el comando con todos los hiperparámetros y llama a `train_GAN.py` mediante `os.system(...)`.
+Lanzador de la **GAN conjunta de los 6 activos** (18 canales = 6 activos × 3 canales intradía).
+No contiene lógica propia: construye el comando con todos los hiperparámetros y llama a
+`train_GAN.py` mediante `os.system(...)`. Es parametrizable por línea de comandos:
 
-Parámetros que fija:
-- Dataset: `portfolio`, activo: `SP500`
-- Batch size: 16 (generador y discriminador)
-- Iteraciones máximas: 500 000
-- Dimensión latente: 100 (tamaño del vector de ruido de entrada al generador)
-- Learning rate generador: 0.0001 / discriminador: 0.0003
-- Loss: LSGAN (Least Squares GAN)
-- Optimizador: Adam (β1=0.9, β2=0.999)
+```bash
+python Train_Portfolio.py --max_iter 100000 --exp_name portfolio
+python Train_Portfolio.py --assets SP500 Gold --exp_name sp500_gold   # subconjunto de activos
+```
 
-Para pruebas rápidas, cambiar `--max_iter 500000` a `--max_iter 500`.
+| Argumento | Default | Descripción |
+|---|---|---|
+| `--assets` | los 6 activos | Lista de activos a entrenar conjuntamente |
+| `--max_iter` | 100000 | Iteraciones de entrenamiento |
+| `--exp_name` | portfolio | Nombre del experimento (carpeta de logs) |
+| `--rank` | 0 | Rank para entrenamiento distribuido |
+
+Hiperparámetros fijados internamente: batch 64, `latent_dim 256`, `g_lr 0.0001`,
+`d_lr 0.0002`, loss LSGAN, optimizador Adam (β1=0.9, β2=0.999), `patch_size 15`,
+`d_depth 3`, `g_depth 5,4,2`, `--use_intraday`, `--filter_regime moderate stress`,
+EMA 0.9999, diff-aug `translation,cutout,color`.
+
+### `Train_SP500.py` — Lanzador por activo individual
+
+Variante que entrena un único activo (a pesar del nombre, **actualmente está configurado
+para `UST10Y`**). Misma configuración de hiperparámetros que `Train_Portfolio.py` pero con
+`--assets UST10Y` y `--exp_name UST10Y`. Útil como plantilla para entrenar GANs por activo;
+basta con editar el activo en el script.
+
+Para pruebas rápidas, reducir `--max_iter` (p. ej. a 500).
 
 ---
 
@@ -140,23 +163,25 @@ Parámetros clave:
 
 Define todos los hiperparámetros del experimento mediante `argparse`. Los más relevantes:
 
-| Argumento | Default en Train_SP500 | Descripción |
+| Argumento | Valor en los lanzadores | Descripción |
 |---|---|---|
-| `--max_iter` | 500 000 | Número total de iteraciones de entrenamiento |
-| `--batch_size` | 16 | Muestras por batch |
-| `--latent_dim` | 100 | Dimensión del vector de ruido z |
+| `--max_iter` | 100 000 | Número total de iteraciones de entrenamiento |
+| `--batch_size` | 64 | Muestras por batch |
+| `--latent_dim` | 256 | Dimensión del vector de ruido z |
 | `--g_lr` | 0.0001 | Learning rate del generador |
-| `--d_lr` | 0.0003 | Learning rate del discriminador |
+| `--d_lr` | 0.0002 | Learning rate del discriminador |
 | `--loss` | lsgan | Función de pérdida (lsgan / hinge / wgangp) |
-| `--patch_size` | 2 | Tamaño del parche en el discriminador |
+| `--patch_size` | 15 | Tamaño del parche en el discriminador (divide seq_len=150) |
 | `--df_dim` | 384 | Dimensión base del discriminador |
 | `--d_depth` | 3 | Número de bloques transformer en el discriminador |
 | `--g_depth` | 5,4,2 | Profundidad del generador |
 | `--dropout` | 0 | Dropout (0 = desactivado) |
 | `--ema` | 0.9999 | Exponential Moving Average del generador |
-| `--exp_name` | Running | Nombre del experimento (carpeta de logs) |
-| `--window_length` | 150 (default) | Longitud de ventana temporal |
-| `--asset` | SP500 | Activo financiero a entrenar |
+| `--exp_name` | portfolio / UST10Y | Nombre del experimento (carpeta de logs) |
+| `--assets` | los 6 activos | Activos financieros a entrenar (conjuntamente) |
+| `--use_intraday` | activado | Usa 3 canales por activo (log-ret, open-close, high-low) |
+| `--filter_regime` | moderate stress | Entrena solo con ventanas de esos regímenes de VIX |
+| `--normalize_mode` | zscore | Normalización por ventana |
 
 ---
 
@@ -203,13 +228,25 @@ Implementación manual del optimizador AdamW (Adam con decaimiento de pesos desa
 Script independiente que se ejecuta después del entrenamiento para visualizar resultados.
 
 Pasos:
-1. Carga un checkpoint guardado en `logs/`
-2. Instancia el generador con los mismos parámetros
-3. Carga datos reales del conjunto de test
-4. Genera N=1000 muestras sintéticas con ruido aleatorio
-5. Llama a `visualizationMetrics.py` para generar gráficos PCA y t-SNE
+1. **Detecta automáticamente** el checkpoint más reciente dentro de `logs/` (no hay que
+   editar rutas manualmente; imprime por consola el checkpoint que usa).
+2. Infiere la configuración del generador (canales, latent_dim, seq_len) desde el checkpoint.
+3. Carga datos reales de test (por defecto N=1000 ventanas, regímenes moderate/stress).
+4. Genera muestras sintéticas con ruido aleatorio.
+5. Llama a `visualizationMetrics.py` para generar dashboards PCA y t-SNE.
 
-Hay que actualizar la variable `ckpt_path` con la ruta al checkpoint generado en el entrenamiento.
+Salidas en `images/` (formato `.png`), por ejemplo `<exp>_<timestamp>_dashboard.png` y
+`<exp>_<timestamp>_pca_tsne.png` (y por activo si la GAN es conjunta).
+
+### `discriminative_score.py` — Discriminative score
+
+Entrena un clasificador para distinguir muestras reales de sintéticas. Un score cercano a
+**0.5** indica que el clasificador no las diferencia (alta calidad del generador); cercano a
+**1.0** indica que las muestras sintéticas son fácilmente detectables (baja calidad).
+
+### `grid.py` — Búsqueda de hiperparámetros
+
+Lanza múltiples entrenamientos variando hiperparámetros para comparar configuraciones del GAN.
 
 ---
 
@@ -220,13 +257,7 @@ Función `visualization(ori_data, generated_data, analysis, save_name)` que comp
 - `analysis='pca'`: Análisis de Componentes Principales
 - `analysis='tsne'`: t-SNE (más lento, más informativo)
 
-Guarda el gráfico como PDF en `./images/<save_name>.pdf`.
-
----
-
-### `dataLoaderUniMB.py` — DataLoader alternativo (no activo)
-
-Carga el dataset UniMiB-SHAR de señales de acelerómetro. Era el dataset original del paper base antes de la adaptación financiera. No se usa en el flujo SP500, pero está disponible si se quiere entrenar con datos de actividad humana.
+Guarda el gráfico como PNG en `./images/<save_name>.png`.
 
 ---
 
@@ -248,7 +279,7 @@ Código para calcular FID (Fréchet Inception Distance) y Inception Score. Son m
 
 ```bash
 cd TTS-GAN
-python3 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -268,6 +299,11 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6
 
 ```bash
 cd tts-gan-tfm
+
+# GAN conjunta de los 6 activos (entrada principal)
+python Train_Portfolio.py --max_iter 100000 --exp_name portfolio
+
+# (alternativa) GAN de un activo individual
 python Train_SP500.py
 ```
 
@@ -275,7 +311,7 @@ El script detecta automáticamente si hay GPU disponible; si no, usa CPU.
 
 Los resultados se guardan en:
 ```
-tts-gan-tfm/logs/Running_<YYYY_MM_DD_HH_MM_SS>/
+tts-gan-tfm/logs/<exp_name>_<YYYY_MM_DD_HH_MM_SS>/
     Model/checkpoint          # pesos del modelo (se sobreescribe cada época)
     Log/                      # ficheros de log y TensorBoard
     Samples/                  # imágenes de muestra (si --show activo)
@@ -286,11 +322,7 @@ Para monitorizar el entrenamiento en TensorBoard:
 tensorboard --logdir tts-gan-tfm/logs/
 ```
 
-Para una prueba rápida (pocas iteraciones):
-```bash
-# Editar Train_SP500.py y cambiar --max_iter 500000 a --max_iter 500
-python Train_SP500.py
-```
+Para una prueba rápida (pocas iteraciones), reducir `--max_iter` (p. ej. a 500).
 
 ---
 
@@ -299,12 +331,15 @@ python Train_SP500.py
 Una vez terminado el entrenamiento, ejecutar directamente:
 
 ```bash
-python eval.py
+python eval.py                  # PCA / t-SNE + dashboards
+python discriminative_score.py  # discriminative score (real vs. sintético)
 ```
 
-El script detecta automáticamente el experimento más reciente dentro de `logs/` y carga su checkpoint, sin necesidad de editar ninguna ruta. Imprime por consola el checkpoint que está usando.
+`eval.py` detecta automáticamente el experimento más reciente dentro de `logs/` y carga su
+checkpoint, sin necesidad de editar ninguna ruta. Imprime por consola el checkpoint que usa.
 
-Genera `images/sp500_pca.pdf` y `images/sp500_tsne.pdf` comparando la distribución de series reales vs sintéticas.
+Genera en `images/` los dashboards `.png` (`<exp>_<timestamp>_dashboard.png` y
+`<exp>_<timestamp>_pca_tsne.png`) comparando la distribución de series reales vs. sintéticas.
 
 ---
 
@@ -325,8 +360,9 @@ Con LSGAN, en lugar de usar entropía cruzada, se minimiza el error cuadrático 
 
 ## Datos
 
-Los datos se descargan automáticamente de Yahoo Finance al primer uso y se cachean en `data_cache/`. El rango por defecto es 2004-01-01 a 2025-12-31. Se trabaja con log-retornos diarios normalizados por ventana.
+Los datos se descargan automáticamente de Yahoo Finance al primer uso y se cachean en `data_cache/`. El rango por defecto es 2004-01-01 a 2025-12-31 (el histórico común efectivo arranca en abril de 2006 por la fecha de inicio de algunos ETFs). Con `--use_intraday` se trabaja con **3 canales por activo** (log-retorno close-to-close, rango open-close y rango high-low), normalizados por ventana.
 
 Los ficheros CSV ya presentes en `data_cache/` contienen:
 - `portfolio_prices_*.csv`: precios de cierre ajustados de los 6 activos
+- `portfolio_open_*.csv` / `portfolio_high_*.csv` / `portfolio_low_*.csv`: OHLC para los canales intradía
 - `portfolio_vix_*.csv`: nivel diario del índice VIX (volatilidad implícita del mercado)

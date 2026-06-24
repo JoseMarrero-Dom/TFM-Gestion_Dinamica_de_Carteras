@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 🚀 Script para crear proyectos Python aislados
+# 🚀 Script para crear proyectos Python venv aislados
 # ./crear_proyecto.sh <nombre_proyecto>
 # permisos: chmod +x crear_proyecto.sh
 if [ -z "$1" ]; then
